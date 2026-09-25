@@ -1,15 +1,20 @@
-# Shared
+## Shared
 
-Platform-neutral PagerAPP logic intended to be reused by Android and iOS.
+Platform-neutral PagerAPP logic reused by Android and iOS. This is a plain Kotlin/JVM Gradle
+module with no Android/iOS SDK imports, so its unit tests run on any JDK (and in Docker).
 
-Candidates (to be created):
+- `Model.kt` — status model, `StatusRule`, `ActiveWindow`, `PagerConfig`, `Page`, `Decision`,
+  and the `NotifyAction` / `TimeBound` / `WatchMode` / `Channel` / `VibrationPattern` enums.
+- `Defaults.kt` — `defaultRuleFor(status)`, the default 0–5 behaviour table.
+- `Decision.kt` — `decide(page, config, now)`: the pure precedence rules (silence > bypass >
+  time bound).
+- `Deduplicator.kt` — at-most-once per message `id`.
+- `Ack.kt` — `buildAck(page, ownUuid)`: constructs the ACK `POST /notify` target + payload
+  when the page carries an `ack_uuid`; returns null otherwise.
+- `PageParser.kt` — reads the fields PagerAPP uses from an already-decoded payload map.
+- `src/test/kotlin/.../LogicTest.kt` — the tests.
 
-- `status.*` — the numeric status model and default action/time-bound map
-- `page.*` — parsing of the opaque PagerMCP page payload (`status`, `PROJECT`, `JOB_ID`,
-  `message`, `logs`, `prio`)
-- `config.*` — serialization of user config (per-status actions, active hours, bypass/silence,
-  watch mode, polling interval)
-- `decision.*` — pure function: given (page, config, local time, watch state) return the
-  notification action. This is the piece with the most edge cases and the best unit-test target.
+Run the tests (canonical): `docker/test-shared.sh`. Do not install a JDK/Gradle on the host.
 
-Keep shared code free of Android/iOS SDK imports so both apps can consume it.
+The Android and iOS apps should consume this logic rather than re-implement it; the platform
+layer only supplies the JSON decoder, storage, and the actual notification/vibration APIs.

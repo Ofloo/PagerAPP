@@ -23,5 +23,10 @@ jobs:
       #       -scheme PagerApp \
       #       -destination 'platform=iOS Simulator,name=iPhone 15' \
       #       build
+      # - name: Test
+      #   run: |
+      #     xcodebuild test -project ios/PagerApp.xcodeproj \
+      #       -scheme PagerApp \
+      #       -destination 'platform=iOS Simulator,name=iPhone 15'
       - name: Placeholder
-        run: echo "iOS workflow scaffolded; enable build step when ios/ project lands."
+        run: echo "iOS workflow scaffolded; enable build/test steps when ios/ project lands."

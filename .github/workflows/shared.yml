@@ -1,0 +1,17 @@
+name: Shared logic tests
+
+# Pure Kotlin/JVM logic tests: no emulator, no simulator, runs on a plain JDK in Docker.
+on:
+  push:
+    paths: ["shared/**", "docker/test-shared.sh", ".github/workflows/shared.yml"]
+  pull_request:
+    paths: ["shared/**", "docker/test-shared.sh"]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run shared logic tests in Docker
+        run: docker/test-shared.sh
