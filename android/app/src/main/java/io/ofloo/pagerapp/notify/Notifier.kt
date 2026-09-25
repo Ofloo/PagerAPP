@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -17,6 +18,8 @@ import io.ofloo.pagerapp.shared.buildAck
 
 /** Builds and posts local notifications, including the opt-in ACK action. */
 object Notifier {
+
+    private const val TAG = "PagerAPP"
 
     fun post(context: Context, page: Page, audible: Boolean) {
         Notifications.ensureChannels(context)
@@ -74,11 +77,21 @@ object Notifier {
     fun sendAck(context: Context, pageId: String, jobId: String?, ackUuid: String?) {
         val store = Store(context)
         val own = store.uuid
-        if (ackUuid.isNullOrBlank() || own.isNullOrBlank()) return
+        if (ackUuid.isNullOrBlank() || own.isNullOrBlank()) {
+            Log.w(TAG, "ACK skipped: ackUuid=${ackUuid != null} ownUuid=${own != null}")
+            return
+        }
         val page = Page(id = pageId, status = 0, jobId = jobId, ackUuid = ackUuid)
-        val ack = buildAck(page, own) ?: return
+        val ack = buildAck(page, own) ?: run {
+            Log.w(TAG, "ACK skipped: buildAck returned null")
+            return
+        }
         runCatching {
             io.ofloo.pagerapp.net.PagerClient.notify(store.serverUrl, ack.targetUuid, ack.payload)
+        }.onSuccess {
+            Log.i(TAG, "ACK sent to ${ack.targetUuid} for page $pageId")
+        }.onFailure {
+            Log.e(TAG, "ACK failed for page $pageId", it)
         }
         val nm = NotificationManagerCompat.from(context)
         nm.cancel(pageId.hashCode())
