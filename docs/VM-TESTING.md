@@ -27,6 +27,7 @@ vm install pagerapp /pad/android-x86_64-9.0-r2.iso
 ```
 guest="linux"
 loader="uefi"
+uefi_vars="yes"
 cpu=4
 memory="4G"
 network0_type="virtio-net"
@@ -40,6 +41,41 @@ xhci_mouse="yes"
 ```
 
 Install Android to the disk, reboot from disk, then set **Settings → Network** to get an IP.
+
+> `uefi_vars="yes"` matters: without it the firmware does not persist the NVRAM boot entry the
+> installer adds, so after the reboot UEFI finds no OS. With it, bhyve keeps a writable vars file
+> next to the disk.
+
+### Partitioning (the usual "UEFI finds no disk" cause)
+
+Android-x86's EFI GRUB2 installer needs a real **EFI System Partition**, not a plain Linux
+partition. Partitioning as a single type `8300` installs fine but leaves nothing UEFI-recognised
+to boot from. In the installer's `cgdisk`, create **two** partitions:
+
+| # | Size | Type | Filesystem | Purpose |
+|---|------|------|------------|---------|
+| 1 | 512M | **EF00** (EFI System) | fat32 | ESP, holds `\EFI\BOOT\BOOTX64.EFI` |
+| 2 | rest | 8300 (Linux filesystem) | ext4 | Android system/data |
+
+Then pick partition 2 when asked where to install Android, and answer **Yes** to "install EFI
+GRUB2" — it detects the ESP automatically.
+
+### If it still will not boot: make the bootloader fallback
+
+UEFI firmware boots `\EFI\BOOT\BOOTX64.EFI` when there is no NVRAM entry. If the installer wrote
+only `\EFI\Android\`, add the fallback from the live ISO's shell (mount the ESP, then):
+
+```
+mkdir -p /mnt/esp/EFI/BOOT
+cp /mnt/esp/EFI/Android/grubx64.efi /mnt/esp/EFI/BOOT/BOOTX64.EFI
+```
+
+### Black screen after boot
+
+A blank VNC screen after the Android splash is the bhyve framebuffer issue, not a boot failure.
+At the GRUB menu press **e** on the Android entry and append `nomodeset` to the `linux` line
+before booting; make it permanent in `/boot/grub/grub.cfg` once you are in. Confirm the system is
+actually up with `docker/adb.sh connect <ip>:5555` (ADB is off by default — see below).
 
 ### Make adb reachable
 
