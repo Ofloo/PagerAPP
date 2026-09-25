@@ -1,0 +1,23 @@
+# PagerAPP repository ignores.
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+*.aab
+
+# iOS
+ios/build/
+ios/DerivedData/
+ios/Pods/
+*.ipa
+
+# Build output
+dist/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

@@ -1,0 +1,27 @@
+name: iOS
+
+# Xcode only runs on macOS, so iOS builds use a macOS runner.
+# Docker-OSX is a slow local fallback only and is never used for distribution.
+on:
+  push:
+    paths: ["ios/**", ".github/workflows/ios.yml"]
+  pull_request:
+    paths: ["ios/**"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -switch /Applications/Xcode.app
+      # Enable once the Xcode project exists (no app code yet):
+      # - name: Build
+      #   run: |
+      #     xcodebuild -project ios/PagerApp.xcodeproj \
+      #       -scheme PagerApp \
+      #       -destination 'platform=iOS Simulator,name=iPhone 15' \
+      #       build
+      - name: Placeholder
+        run: echo "iOS workflow scaffolded; enable build step when ios/ project lands."

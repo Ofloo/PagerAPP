@@ -1,0 +1,21 @@
+name: Android
+
+on:
+  push:
+    paths: ["android/**", "docker/android/**", ".github/workflows/android.yml"]
+  pull_request:
+    paths: ["android/**", "docker/android/**"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build debug APK in Docker
+        run: docker/build-android.sh assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-debug
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn
