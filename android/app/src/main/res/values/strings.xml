@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">PagerAPP</string>
+    <string name="poll_channel_name">PagerAPP service</string>
+    <string name="notif_channel_name">Pages</string>
+    <string name="notif_channel_desc">Incoming PagerMCP pages</string>
+    <string name="action_ack">ACK</string>
+</resources>

@@ -1,0 +1,35 @@
+# XcodeGen spec for PagerAPP (iOS). Generate with: xcodegen generate (in ios/).
+# XcodeGen is used so the project file is reproducible without committing a .xcodeproj.
+name: PagerApp
+options:
+  bundleIdPrefix: io.ofloo
+  deploymentTarget:
+    iOS: "16.0"
+
+targets:
+  PagerApp:
+    type: application
+    platform: iOS
+    sources:
+      - PagerApp
+    info:
+      path: PagerApp/Info.plist
+      properties:
+        CFBundleDisplayName: PagerAPP
+        UILaunchScreen: {}
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.ofloo.pagerapp
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: NO
+
+  PagerAppTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - PagerAppTests
+    dependencies:
+      - target: PagerApp

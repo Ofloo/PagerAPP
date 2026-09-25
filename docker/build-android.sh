@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build the PagerAPP Android APK inside Docker.
+# Build the PagerAPP Android app inside Docker.
+# Mounts the repo root because :app depends on :shared (../shared).
 # Usage: docker/build-android.sh [gradle-task]   (default: assembleDebug)
 set -euo pipefail
 
@@ -10,7 +11,8 @@ TASK="${1:-assembleDebug}"
 docker build -t "${IMAGE}" "${REPO_ROOT}/docker/android"
 
 docker run --rm \
-    -v "${REPO_ROOT}/android:/workspace" \
-    -w /workspace \
+    -v "${REPO_ROOT}:/repo" \
+    -v pagerapp-gradle-cache:/root/.gradle \
+    -w /repo/android \
     "${IMAGE}" \
-    ./gradlew "${TASK}"
+    ./gradlew --no-daemon "${TASK}"
