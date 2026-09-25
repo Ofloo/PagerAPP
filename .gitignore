@@ -5,6 +5,9 @@ android/.gradle/
 android/build/
 android/app/build/
 android/local.properties
+android/keystore.properties
+android/*.jks
+android/*.keystore
 *.apk
 *.aab
 
@@ -17,6 +20,7 @@ ios/Pods/
 # Gradle (all modules)
 .gradle/
 **/build/
+.kotlin/
 
 # Build output
 dist/
