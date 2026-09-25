@@ -113,6 +113,28 @@ running bhyve, or add a port forward for 5555.
 5. Regression check for the old crash: the app must survive being opened repeatedly, and no
    `FATAL EXCEPTION` in `logcat`.
 
+### Verified on a bhyve Android-x86 9.0-r2 VM (2026-09-25)
+
+Confirmed working with the release APK:
+
+- Installs and launches; process stays up, `MainActivity` resumed, **no `FATAL EXCEPTION`**
+  (the old `WAKE_LOCK` startup crash is fixed).
+- In-app mailbox creation; polling fetches pages.
+- Status logic: `status 2` outside active hours is recorded as "not notified"; `status 3`
+  (critical) is delivered regardless of the hour.
+- Notification appears in the shade with title/text and an **ACK** action.
+- **ACK end-to-end**: tapping ACK posts `status 6` back to the page's `ack_uuid`, carrying
+  `acknowledged_by` (the app's own UUID), the original `JOB_ID`, and `in_reply_to` (page id).
+  Check the collector mailbox to confirm:
+  `curl -fsS https://pager.ofloo.io/mailboxes/<collector>/messages -H "Authorization: Bearer <collector>"`
+- The ACK broadcast must do its HTTP call off the main thread; a receiver that posts on the main
+  thread throws `NetworkOnMainThreadException` and the ACK silently never leaves the device
+  (this was a real bug, fixed via `goAsync()` + a background thread).
+
+Interacting with the shade from a script: use `adb shell input tap` with absolute coordinates
+from `adb shell uiautomator dump`, not VNC mouse clicks — bhyve's PS/2 mouse is relative and
+`:5900` allows a single client.
+
 ## Route B — redroid in a Linux bhyve guest (headless / scriptable)
 
 Android in Docker **without KVM**, but it needs binder:
