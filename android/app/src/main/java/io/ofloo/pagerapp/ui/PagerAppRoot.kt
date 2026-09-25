@@ -58,6 +58,11 @@ fun PagerAppRoot(onServiceChanged: (Boolean) -> Unit) {
         return
     }
 
+    // Resume polling whenever the app is opened with a configured mailbox.
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        if (!store.silenceMode) onServiceChanged(true)
+    }
+
     Scaffold { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
             TabRow(selectedTabIndex = tab) {

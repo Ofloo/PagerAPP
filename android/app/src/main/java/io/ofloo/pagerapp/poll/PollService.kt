@@ -61,13 +61,15 @@ class PollService : Service() {
         val store = Store(this)
         while (running) {
             val interval = store.pollSeconds
-            val lock = acquireWakeLock(interval)
+            var lock: PowerManager.WakeLock? = null
             try {
+                lock = acquireWakeLock(interval)
                 tick(store)
             } catch (_: Exception) {
-                // Network/server errors are expected; retry on the next tick.
+                // Network/server/permission errors are expected; retry on the next tick.
+                // Never let the worker thread die, or the whole process is taken down.
             } finally {
-                lock?.let { if (it.isHeld) it.release() }
+                runCatching { lock?.let { if (it.isHeld) it.release() } }
             }
             sleepInterval(interval)
         }
