@@ -3,24 +3,61 @@
 This host has **no `/dev/kvm`**, so Android Studio AVDs, Cuttlefish and Genymotion do not run
 here. Use one of the routes below to get a real device the agent can `adb` into.
 
-## Route A — Android-x86 / BlissOS in bhyve (recommended)
+## Route A — Android-x86 in bhyve (recommended)
 
 A full Android OS in the VM, no KVM required. The release APK is multi-ABI
-(`arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`), so it installs on an x86_64 image.
+(`arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`), so it installs natively on an x86_64 image.
 
-1. Install a UEFI Android image (BlissOS 14/15 or Android-x86 9.0-r2) with `vm-bhyve`.
-2. Give the VM bridged networking (`virtio-net` on a public switch).
-3. Boot, enable **Developer Options → ADB** (network ADB), note the VM IP.
+### Image
+
+Use **`android-x86_64-9.0-r2.iso`** (965.7 MB, Android 9 / API 28 > our minSdk 26).
+- Fall back to `android-x86_64-9.0-r2-k49.iso` only if the default kernel will not boot under
+  bhyve (older 4.9 kernel, sometimes more forgiving on odd firmware).
+- Do **not** use the `i686` images: 32-bit only, and native x86_64 code would not run.
+
+### vm-bhyve setup
+
+```
+vm init pagerapp
+vm install pagerapp /pad/android-x86_64-9.0-r2.iso
+```
+
+`/zroot/vm/pagerapp/pagerapp.conf`:
+
+```
+guest="linux"
+loader="uefi"
+cpu=4
+memory="4G"
+network0_type="virtio-net"
+network0_switch="public"
+disk0_type="ahci-hd"
+disk0_name="disk0.img"
+disk0_size="16G"
+graphics="yes"
+graphics_res="1280x800"
+xhci_mouse="yes"
+```
+
+Install Android to the disk, reboot from disk, then set **Settings → Network** to get an IP.
+
+### Make adb reachable
+
+1. Settings → About → tap **Build number** 7× to unlock Developer options.
+2. Developer options → enable **USB debugging** / **ADB over network**.
+3. Find the VM IP (Settings → Network, or the VM console).
 4. From the repo root:
 
    ```
    docker/adb.sh connect <vm-ip>:5555
    docker/adb.sh install -r dist/PagerAPP-release.apk
+   docker/adb.sh shell am start -n io.ofloo.pagerapp/.ui.MainActivity
    docker/adb.sh logcat -d '*:E'
    ```
 
 `docker/adb.sh` runs `adb` inside the Android SDK image with host networking; nothing is
-installed on the Ubuntu host.
+installed on the Ubuntu host. If the VM network is NAT instead of bridged, connect from the host
+running bhyve, or add a port forward for 5555.
 
 ### What works in a VM
 - Polling, notifications, status rules, active hours, bypass/silence, ACK.
@@ -28,6 +65,17 @@ installed on the Ubuntu host.
 
 ### What does not
 - The QR scanner (no camera). Use **paste UUID** in setup instead.
+- Android 9 does not prompt for `POST_NOTIFICATIONS` (that started at API 33); notifications
+  post without a runtime permission there.
+
+### Smoke test
+1. `docker/adb.sh shell am start -n io.ofloo.pagerapp/.ui.MainActivity`
+2. In the app: **Create a new mailbox** (or paste one).
+3. From the host, page the app's UUID:
+   `curl -X POST https://pager.ofloo.io/notify -H "Authorization: Bearer <uuid>" -H "Content-Type: application/json" -d '{"PROJECT":"test","JOB_ID":"smoke-1","status":2,"message":"hello"}'`
+4. Within one poll interval a notification appears and the page shows in the Pages tab.
+5. Regression check for the old crash: the app must survive being opened repeatedly, and no
+   `FATAL EXCEPTION` in `logcat`.
 
 ## Route B — redroid in a Linux bhyve guest (headless / scriptable)
 
