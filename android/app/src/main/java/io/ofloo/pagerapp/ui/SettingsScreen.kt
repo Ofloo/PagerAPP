@@ -71,6 +71,7 @@ fun SettingsScreen(
     var restore by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
     var keyMonths by remember { mutableStateOf(store.keyExpiryMonths) }
+    var keyBits by remember { mutableStateOf(store.keyBits) }
     var keyRevision by remember { mutableIntStateOf(0) }
     var generating by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()

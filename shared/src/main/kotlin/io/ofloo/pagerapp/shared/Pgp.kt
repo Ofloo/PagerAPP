@@ -58,6 +58,11 @@ object Pgp {
     const val MAX_EXPIRY_MONTHS = 12
     const val DEFAULT_EXPIRY_MONTHS = 12
 
+    /** RSA modulus sizes. 2048 is the OpenPGP norm; larger is slower to generate and bigger. */
+    const val MIN_KEY_BITS = 2048
+    const val MAX_KEY_BITS = 8192
+    const val DEFAULT_KEY_BITS = 2048
+
     private const val PROVIDER = "BC"
     private const val MONTH_SECONDS = 30L * 24L * 3600L
 
@@ -89,14 +94,17 @@ object Pgp {
         userId: String,
         expiryMonths: Int = DEFAULT_EXPIRY_MONTHS,
         passphrase: CharArray? = null,
+        keyBits: Int = DEFAULT_KEY_BITS,
         now: Date = Date(),
     ): KeyMaterial {
         ensureProvider()
         val months = expiryMonths.coerceIn(MIN_EXPIRY_MONTHS, MAX_EXPIRY_MONTHS).toLong()
         val validitySeconds = Math.multiplyExact(months, MONTH_SECONDS)
+        val bits = keyBits.coerceIn(MIN_KEY_BITS, MAX_KEY_BITS)
 
-        // Classic RSA: the one configuration Bouncy Castle and gpg agree on everywhere.
-        val rsa = KeyPairGenerator.getInstance("RSA", PROVIDER).apply { initialize(2048) }
+        // Classic RSA: the one configuration Bouncy Castle and gpg agree on everywhere. Both keys
+        // use the requested size; note that generation time grows steeply with the modulus.
+        val rsa = KeyPairGenerator.getInstance("RSA", PROVIDER).apply { initialize(bits) }
         val primaryPair = JcaPGPKeyPair(PublicKeyAlgorithmTags.RSA_GENERAL, rsa.generateKeyPair(), now)
         val subPair = JcaPGPKeyPair(PublicKeyAlgorithmTags.RSA_ENCRYPT, rsa.generateKeyPair(), now)
 

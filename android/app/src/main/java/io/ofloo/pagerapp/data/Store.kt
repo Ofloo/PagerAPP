@@ -81,8 +81,15 @@ class Store(context: Context) {
     /** Replaces the key ring — used when the old one expires or the user asks for a new one. */
     fun renewKeys(): Pgp.KeyMaterial = generateKeys()
 
+    /** RSA size for newly generated keys. Larger is slower to generate, not weaker. */
+    var keyBits: Int
+        get() = prefs.getInt(KEY_BITS, DEFAULT_KEY_BITS_PREF)
+        set(v) = prefs.edit()
+            .putInt(KEY_BITS, v.coerceIn(Pgp.MIN_KEY_BITS, Pgp.MAX_KEY_BITS))
+            .apply()
+
     private fun generateKeys(): Pgp.KeyMaterial {
-        val keys = Pgp.generate("PagerAPP <pagerapp>", keyExpiryMonths)
+        val keys = Pgp.generate("PagerAPP <pagerapp>", keyExpiryMonths, keyBits = keyBits)
         prefs.edit()
             .putString(KEY_PUB, keys.publicArmored)
             .putString(KEY_SEC, keys.secretArmored)
@@ -263,6 +270,10 @@ class Store(context: Context) {
         private const val KEY_FPR = "pgp_fingerprint"
         private const val KEY_EXP = "pgp_expires_at"
         private const val KEY_EXP_MONTHS = "pgp_expiry_months"
+        private const val KEY_BITS = "pgp_bits"
+
+        /** 8192 by request; generating that on a phone can take minutes, so it is changeable. */
+        private const val DEFAULT_KEY_BITS_PREF = 8192
         private const val KEY_CONTACTS = "contacts"
         private const val KEY_POLL = "poll_seconds"
         private const val KEY_CONFIG = "config"
