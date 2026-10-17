@@ -61,6 +61,10 @@ object.
 | `ack_uuid` | string (UUID) | no | Mailbox an acknowledgement may be sent to (§6) |
 | `from` | string | no | Sender's **per-channel** id (contact messaging, §5) — never a mailbox UUID |
 | `from_name` | string | no | Sender's display name |
+| `pub` | string | no | Sender's armored OpenPGP public key (§8) |
+| `enc` | string | no | Message body encrypted to the recipient's public key (§8) |
+| `mid` | string | no | Client-side id of the message, for read receipts (§7) |
+| `read` | string | no | Receipt-only page: the `mid` the sender has just read (§7) |
 
 Clients MUST surface `age_seconds`/`created_at`; an old queued page is not a fresh event.
 
@@ -153,6 +157,9 @@ Contact {
   uuid:       string   // the CHANNEL mailbox (shared by both sides)
   senderId:   string   // the peer's per-channel sender id
   mySenderId: string   // our per-channel sender id
+  publicKey:  string   // the peer's armored OpenPGP key, learned automatically (§8)
+  kind:       PERSON | SYSTEM   // chat partner, or alarm source (§5.4)
+  level:      string   // which configured chat level this chat uses (§5.5)
 }
 // local identity key: server + "|" + uuid
 ```
@@ -174,6 +181,10 @@ pagerapp://contact?u=<channel>&s=<server>&n=<name>&i=<my-sender-id>
 - Decoders MUST also accept a **bare UUID** (server taken from local config) or a URL whose last
   path segment is the UUID, and MUST reject input with no usable UUID.
 - The scanner generates its **own** fresh `mySenderId` for the new channel.
+- The same payload travels over **NFC**: written to a tag as an NDEF record of MIME type
+  `application/io.ofloo.pagerapp.contact`, with the payload as the record body. A client should
+  also accept a plain NDEF Text record, and declare an `NDEF_DISCOVERED` intent filter for that
+  MIME type so a tap opens the app even when it is closed.
 
 ### 5.2 Sending a message
 
@@ -204,6 +215,33 @@ it on the contact; until then the contact is marked "awaiting reply".
 A receiver groups a channel's pages by comparing `page.from` with `senderId` (theirs) and
 `mySenderId` (ours), ordered by `created_at`.
 
+### 5.4 Contact kind
+
+A contact is one of two things, and the kind decides how the client behaves:
+
+- **PERSON** — a chat. Opening it shows the conversation; reading *is* the acknowledgement, so a
+  person chat has **no manual ACK button** (the client acks inbound channel pages as it fetches
+  them, and marks them read). Read receipts (§7) apply.
+- **SYSTEM** — an alarm source. Messages stay in the notification list and always offer a
+  **manual ACK** (with an optional note) whenever the page carries an `ack_uuid`, so the operator
+  knows it was really seen.
+
+### 5.5 Chat levels
+
+The notification level of a chat is a name stored on the contact, resolved against the levels in
+the client's configuration:
+
+```
+config.chatLevels = { "<name>" -> { action: silent | sound+vibrate | urgent,
+                                    timeBound: always | active_hours | never } }
+```
+
+Defaults: `Important` (urgent, always), `Normal` (sound+vibrate, active hours), `Silent` (never).
+Because the contact stores only the name, retuning a level changes it for every chat using it.
+
+"Always" means *this app* ignores its own active hours. It never overrides the phone's silent
+mode or Do Not Disturb; clients MUST NOT bypass those.
+
 ---
 
 ## 6. Acknowledgement
@@ -226,19 +264,52 @@ An ACK is an ordinary `POST /notify` to the page's `ack_uuid` (that UUID is the 
 
 ---
 
-## 7. Compatibility and versioning
+## 7. Read receipts
+
+An ACK (§6) is transport: it removes a page from the server queue. A **read receipt** is social:
+it tells the peer their message was actually seen, and drives the ✓ / ✓✓ marks in a chat.
+
+- An outgoing chat message carries a client-generated id in `mid`.
+- When the recipient opens (reads) it, the client sends a receipt-only page back to the same
+  channel: `{ "status": 10, "from": "<my sender id>", "read": "<mid>" }`. A receipt carries no
+  body and is not itself a message.
+- The original sender matches `read` against the `mid` it stored and marks that message read.
+- Receipts are for **person** contacts. System contacts use the manual ACK instead (§5.4).
+
+## 8. Encryption
+
+Message bodies can be end-to-end encrypted with OpenPGP; PagerMCP stays a dumb relay and never
+sees the plaintext.
+
+- A client generates a key ring on first use: a signing primary key plus an encryption subkey,
+  **expiring between 6 and 12 months**. The expiry is part of the self-signature, so `gpg` sees it.
+- Every outgoing message carries the sender's public key in `pub`, so the peer learns it on the
+  **first message** with no separate exchange step — and again whenever the key is rotated.
+- Once the peer's key is known, the body is sent as `enc`, encrypted to it (and signed). Until
+  then the body travels as plain `message`, with `pub` attached so the peer can answer encrypted.
+- A client that cannot decrypt a page must surface that plainly rather than showing ciphertext.
+- An expired key is replaced and the replacement propagates the same way; a peer that stops
+  receiving a usable key eventually sees plaintext again rather than silence.
+
+Only the body is encrypted. The transport fields PagerMCP itself needs (`id`, `status`, `from`,
+`mid`, `read`) stay in the clear.
+
+---
+
+## 9. Compatibility and versioning
 
 - The QR scheme carries no explicit version. Adding an optional query parameter is
   backward-compatible (unknown parameters MUST be ignored).
 - Status semantics for `0`–`6` are fixed; `7`–`99` are user-defined. A client that meets an
   unknown numeric status SHOULD apply the "custom, undefined" default (silent, never).
 - Unknown JSON fields in a page MUST be ignored; clients read only the fields in §2.
-- `from`/`from_name`/`ack_uuid` are additive: a client that ignores them simply sees ordinary
-  pages.
+- `from`/`from_name`/`ack_uuid`/`pub`/`enc`/`mid`/`read` are additive: a client that ignores them
+  simply sees ordinary pages, and one that cannot decrypt shows the page as undecryptable rather
+  than dropping it.
 
 ---
 
-## 8. Worked examples
+## 10. Worked examples
 
 Inbound text-status page (as sent by `pager.sh`):
 
@@ -264,8 +335,28 @@ Two-way chat message on a shared channel:
   "status": 10,
   "message": "ben je er?",
   "from": "b7c1f0d2-…",
-  "from_name": "Ofloo"
+  "from_name": "Ofloo",
+  "mid": "out-9f3c…"
 }
+```
+
+The same message once the peer's key is known (`pub` still travels, `enc` replaces `message`):
+
+```json
+{
+  "status": 10,
+  "from": "b7c1f0d2-…",
+  "from_name": "Ofloo",
+  "mid": "out-9f3c…",
+  "pub": "-----BEGIN PGP PUBLIC KEY BLOCK-----\n…",
+  "enc": "-----BEGIN PGP MESSAGE-----\n…"
+}
+```
+
+Read receipt for that message:
+
+```json
+{ "status": 10, "from": "a1d4…", "read": "out-9f3c…" }
 ```
 
 Contact invite QR (a fresh channel plus the inviter's per-channel id):
