@@ -13,11 +13,12 @@ docker build -t "${IMAGE}" "${REPO_ROOT}/docker/android"
 # A build stopped with SIGKILL leaves a stale journal lock in the shared Gradle cache, and every
 # later build then dies with "Timeout waiting to lock journal cache". Clear it — but only when no
 # other build is running, so a parallel build is never disturbed.
-if ! docker ps --format '{{.ID}}' | while read -r id; do
-        docker inspect -f '{{.Config.Cmd}}' "${id}" 2>/dev/null | grep -q gradlew && echo busy && break
-    done | grep -q busy; then
+BUSY="$(docker ps --format '{{.ID}}' | while read -r id; do
+    docker inspect -f '{{.Config.Cmd}}' "$id" 2>/dev/null | grep -q gradlew && { echo busy; break; }
+done)"
+if [ -z "${BUSY}" ]; then
     docker run --rm -v pagerapp-gradle-cache:/cache "${IMAGE}" \
-        sh -c "rm -f /cache/caches/journal-1/journal-1.lock" >/dev/null 2>&1 || true
+        sh -c 'rm -f /cache/caches/journal-1/journal-1.lock' >/dev/null 2>&1 || true
 fi
 
 docker run --rm \
