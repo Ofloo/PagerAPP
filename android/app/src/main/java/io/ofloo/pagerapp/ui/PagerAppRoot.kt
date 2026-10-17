@@ -65,11 +65,15 @@ import io.ofloo.pagerapp.net.PagerClient
 import io.ofloo.pagerapp.poll.Poller
 import io.ofloo.pagerapp.poll.PollService
 import io.ofloo.pagerapp.shared.Contact
+import io.ofloo.pagerapp.shared.ContactKind
 import io.ofloo.pagerapp.shared.Page
 import io.ofloo.pagerapp.shared.buildAck
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 private val TABS = listOf("Pages", "Contacts", "Rules", "Settings")
 
@@ -140,7 +144,7 @@ fun PagerAppRoot(onServiceChanged: (Boolean) -> Unit, onThemeChanged: (ThemeMode
                 }
             }
             when (tab) {
-                0 -> PagesScreen(store)
+                0 -> PagesScreen(store, onOpenChat = { chat = it })
                 1 -> ContactsScreen(store, onOpenChat = { chat = it })
                 2 -> RulesScreen(store)
                 else -> SettingsScreen(store, onServiceChanged, onThemeChanged)
@@ -149,15 +153,17 @@ fun PagerAppRoot(onServiceChanged: (Boolean) -> Unit, onThemeChanged: (ThemeMode
     }
 }
 
+enum class PageMode { CHATS, PAGES, ARCHIVED }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PagesScreen(store: Store) {
+private fun PagesScreen(store: Store, onOpenChat: (Contact) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var revision by remember { mutableIntStateOf(0) }
     var selected by remember { mutableStateOf<HistoryEntry?>(null) }
     var banner by remember { mutableStateOf<String?>(null) }
-    var showArchived by remember { mutableStateOf(false) }
+    var mode by remember { mutableStateOf(PageMode.CHATS) }
     var refreshing by remember { mutableStateOf(false) }
 
     // Refresh live while the poll service records pages in the background. Listeners fire on the
@@ -168,7 +174,9 @@ private fun PagesScreen(store: Store) {
         onDispose { store.unregisterListener(listener) }
     }
     val all = remember(revision) { store.history() }
-    val visible = remember(revision, showArchived) { all.filter { it.archived == showArchived } }
+    val visible = remember(revision, mode) {
+        all.filter { it.archived == (mode == PageMode.ARCHIVED) }
+    }
 
     /** Fetch right now — pull-to-refresh, and once when the screen opens. */
     fun refreshNow() {
@@ -189,13 +197,18 @@ private fun PagesScreen(store: Store) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             FilterChip(
-                selected = !showArchived,
-                onClick = { showArchived = false },
-                label = { Text("Active") },
+                selected = mode == PageMode.CHATS,
+                onClick = { mode = PageMode.CHATS },
+                label = { Text("Chats") },
             )
             FilterChip(
-                selected = showArchived,
-                onClick = { showArchived = true },
+                selected = mode == PageMode.PAGES,
+                onClick = { mode = PageMode.PAGES },
+                label = { Text("Pages") },
+            )
+            FilterChip(
+                selected = mode == PageMode.ARCHIVED,
+                onClick = { mode = PageMode.ARCHIVED },
                 label = { Text("Archived") },
             )
         }
@@ -210,50 +223,55 @@ private fun PagesScreen(store: Store) {
             Spacer(Modifier.height(4.dp))
         }
 
-        PullToRefreshBox(
-            isRefreshing = refreshing,
-            onRefresh = { refreshNow() },
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            if (visible.isEmpty()) {
-                LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    item {
-                        Text(
-                            if (showArchived) "Nothing archived yet. Swipe a page right to archive it."
-                            else "No pages yet. Pull down to fetch.",
-                            modifier = Modifier.fillMaxWidth().padding(24.dp),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+        if (mode == PageMode.CHATS) {
+            ChatsList(store = store, history = all, onOpenChat = onOpenChat)
+        } else {
+            val showArchived = mode == PageMode.ARCHIVED
+            PullToRefreshBox(
+                isRefreshing = refreshing,
+                onRefresh = { refreshNow() },
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                if (visible.isEmpty()) {
+                    LazyColumn(modifier = Modifier.fillMaxSize()) {
+                        item {
+                            Text(
+                                if (showArchived) "Nothing archived yet. Swipe a page right to archive it."
+                                else "No pages yet. Pull down to fetch.",
+                                modifier = Modifier.fillMaxWidth().padding(24.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
-                }
-            } else {
-                LazyColumn(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
-                    items(visible, key = { it.id }) { entry ->
-                        val dismissState = rememberSwipeToDismissBoxState(
-                            confirmValueChange = { value ->
-                                when (value) {
-                                    SwipeToDismissBoxValue.StartToEnd -> {
-                                        store.setArchived(entry.id, !showArchived)
-                                        banner = if (showArchived) "Restored" else "Archived"
-                                        revision++
+                } else {
+                    LazyColumn(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
+                        items(visible, key = { it.id }) { entry ->
+                            val dismissState = rememberSwipeToDismissBoxState(
+                                confirmValueChange = { value ->
+                                    when (value) {
+                                        SwipeToDismissBoxValue.StartToEnd -> {
+                                            store.setArchived(entry.id, !showArchived)
+                                            banner = if (showArchived) "Restored" else "Archived"
+                                            revision++
+                                        }
+                                        SwipeToDismissBoxValue.EndToStart -> {
+                                            store.deleteEntry(entry.id)
+                                            banner = "Deleted"
+                                            revision++
+                                        }
+                                        else -> Unit
                                     }
-                                    SwipeToDismissBoxValue.EndToStart -> {
-                                        store.deleteEntry(entry.id)
-                                        banner = "Deleted"
-                                        revision++
-                                    }
-                                    else -> Unit
-                                }
-                                false // the list is rewritten; let the row snap back for now
-                            },
-                        )
-                        SwipeToDismissBox(
-                            state = dismissState,
-                            backgroundContent = {
-                                SwipeBackground(dismissState.dismissDirection, showArchived)
-                            },
-                        ) {
-                            PageCard(entry) { selected = entry }
+                                    false
+                                },
+                            )
+                            SwipeToDismissBox(
+                                state = dismissState,
+                                backgroundContent = {
+                                    SwipeBackground(dismissState.dismissDirection, showArchived)
+                                },
+                            ) {
+                                PageCard(entry) { selected = entry }
+                            }
                         }
                     }
                 }
@@ -293,6 +311,98 @@ private fun PagesScreen(store: Store) {
             },
         )
     }
+}
+
+/** One row in the conversation list: who, what was said last, when, and how much is unread. */
+private data class ChatRow(
+    val contact: Contact,
+    val last: HistoryEntry,
+    val unread: Int,
+)
+
+/**
+ * The conversation list, WhatsApp-shaped: one row per contact with the last message, sorted by
+ * how recent it is, and an unread count. Tapping opens the conversation.
+ */
+@Composable
+private fun ChatsList(store: Store, history: List<HistoryEntry>, onOpenChat: (Contact) -> Unit) {
+    val rows = remember(history) {
+        store.contacts().mapNotNull { contact ->
+            val mine = contact.mySenderId
+            val theirs = contact.senderId
+            val thread = history.filter { entry ->
+                (theirs.isNotBlank() && entry.from == theirs) ||
+                    (mine.isNotBlank() && entry.from == mine)
+            }
+            val last = thread.maxByOrNull { it.createdAt } ?: return@mapNotNull null
+            val unread = thread.count { entry ->
+                theirs.isNotBlank() && entry.from == theirs && !entry.acked && !entry.notice
+            }
+            ChatRow(contact, last, unread)
+        }.sortedByDescending { it.last.createdAt }
+    }
+
+    if (rows.isEmpty()) {
+        Text(
+            "No conversations yet. Add a contact on the Contacts tab.",
+            modifier = Modifier.fillMaxWidth().padding(24.dp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+
+    LazyColumn(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
+        items(rows, key = { it.contact.id }) { row ->
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp)
+                    .clickable { onOpenChat(row.contact) },
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            row.contact.name.ifBlank { "(unnamed)" } +
+                                if (row.contact.kind == ContactKind.SYSTEM) " · system" else "",
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text(
+                            row.last.message ?: "(no text)",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(shortTime(row.last.createdAt), fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (row.unread > 0) {
+                            Text(
+                                row.unread.toString(),
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun shortTime(epochSeconds: Double): String {
+    if (epochSeconds <= 0) return ""
+    val then = Date((epochSeconds * 1000).toLong())
+    val now = Date()
+    val sameDay = SimpleDateFormat("yyyyMMdd", Locale.getDefault()).format(then) ==
+        SimpleDateFormat("yyyyMMdd", Locale.getDefault()).format(now)
+    val pattern = if (sameDay) "HH:mm" else "dd/MM"
+    return SimpleDateFormat(pattern, Locale.getDefault()).format(then)
 }
 
 @Composable
