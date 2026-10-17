@@ -24,10 +24,19 @@ if [ "$BUMP" = 1 ]; then
 import pathlib, re
 p = pathlib.Path("android/app/build.gradle.kts")
 s = p.read_text()
+
 m = re.search(r"versionCode = (\d+)", s)
 new = int(m.group(1)) + 1
-p.write_text(s[:m.start(1)] + str(new) + s[m.end(1):])
-print(f"versionCode -> {new}")
+s = s[:m.start(1)] + str(new) + s[m.end(1):]
+
+# Keep the human-visible version in step with the build, so "About" shows at a glance
+# whether the installed app is the one that was just released.
+n = re.search(r'versionName = "([^"]*)"', s)
+if n:
+    s = s[:n.start(1)] + f"0.1.{new}" + s[n.end(1):]
+
+p.write_text(s)
+print(f"versionCode -> {new}, versionName -> 0.1.{new}")
 PY
 fi
 
