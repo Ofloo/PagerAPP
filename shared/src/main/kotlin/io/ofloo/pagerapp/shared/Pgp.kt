@@ -70,7 +70,14 @@ object Pgp {
     )
 
     private fun ensureProvider() {
-        if (Security.getProvider(PROVIDER) == null) Security.addProvider(BouncyCastleProvider())
+        // Android ships its own stripped provider already named "BC" (no SHA-1, no OpenPGP), so a
+        // plain addProvider() is silently a no-op and our code would end up using that one.
+        // Replace it with the real Bouncy Castle under the same name.
+        val existing = Security.getProvider(PROVIDER)
+        if (existing !is BouncyCastleProvider) {
+            Security.removeProvider(PROVIDER)
+            Security.addProvider(BouncyCastleProvider())
+        }
     }
 
     /**
