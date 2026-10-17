@@ -326,6 +326,8 @@ data class HistoryEntry(
     val archived: Boolean = false,
     /** True when this message arrived encrypted (or was sent encrypted) — shown as a padlock. */
     val encrypted: Boolean = false,
+    /** True for a protocol notice ("learned their key", …) — shown centred, not as a bubble. */
+    val notice: Boolean = false,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("id", id)
@@ -341,6 +343,7 @@ data class HistoryEntry(
         .put("acked", acked)
         .put("archived", archived)
         .put("encrypted", encrypted)
+        .put("notice", notice)
 
     companion object {
         fun fromJson(o: JSONObject) = HistoryEntry(
@@ -357,6 +360,7 @@ data class HistoryEntry(
             acked = o.optBoolean("acked", false),
             archived = o.optBoolean("archived", false),
             encrypted = o.optBoolean("encrypted", false),
+            notice = o.optBoolean("notice", false),
         )
 
         fun from(page: Page, delivered: Boolean) = HistoryEntry(

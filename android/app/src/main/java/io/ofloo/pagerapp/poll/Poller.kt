@@ -11,6 +11,7 @@ import io.ofloo.pagerapp.shared.Contact
 import io.ofloo.pagerapp.shared.ContactKind
 import io.ofloo.pagerapp.shared.Decision
 import io.ofloo.pagerapp.shared.Page
+import io.ofloo.pagerapp.shared.STATUS_MESSAGE
 import io.ofloo.pagerapp.shared.decide
 import io.ofloo.pagerapp.shared.decideForContact
 import io.ofloo.pagerapp.shared.publicKeyFrom
@@ -98,6 +99,29 @@ object Poller {
                 publicKeyFrom(page)?.let { learned ->
                     if (learned != contact.publicKey) {
                         store.upsertContact(contact.copy(publicKey = learned))
+                        // Say so in the conversation: otherwise the handshake is invisible.
+                        store.addHistory(
+                            listOf(
+                                HistoryEntry(
+                                    id = "notice-${page.id}-key",
+                                    status = STATUS_MESSAGE,
+                                    jobId = null,
+                                    project = null,
+                                    message = if (contact.publicKey.isBlank()) {
+                                        "🔑 learned their key — messages are now encrypted"
+                                    } else {
+                                        "🔑 their key changed"
+                                    },
+                                    createdAt = System.currentTimeMillis() / 1000.0,
+                                    ackUuid = null,
+                                    delivered = false,
+                                    from = contact.senderId.ifBlank { learned },
+                                    fromName = page.fromName ?: contact.name,
+                                    acked = true,
+                                    notice = true,
+                                ),
+                            ),
+                        )
                     }
                 }
             }

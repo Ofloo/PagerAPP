@@ -48,6 +48,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.ofloo.pagerapp.data.HistoryEntry
@@ -184,6 +185,17 @@ fun ChatScreen(contact: Contact, store: Store, onBack: () -> Unit) {
             modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp),
         ) {
             items(thread, key = { it.id }) { entry ->
+                if (entry.notice) {
+                    // Protocol notices sit between the bubbles, centred and quiet.
+                    Text(
+                        entry.message ?: "",
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp,
+                        textAlign = TextAlign.Center,
+                    )
+                    return@items
+                }
                 val mine = entry.from == contact.mySenderId
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
