@@ -12,6 +12,7 @@ import io.ofloo.pagerapp.R
 import io.ofloo.pagerapp.data.Store
 import io.ofloo.pagerapp.net.PagerClient
 import io.ofloo.pagerapp.notify.Notifications
+import io.ofloo.pagerapp.shared.Contact
 import kotlin.concurrent.thread
 
 /**
