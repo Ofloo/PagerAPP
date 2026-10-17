@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.provider.Settings
+import android.util.Log
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -311,10 +312,22 @@ fun SettingsScreen(
                     enabled = !generating,
                     onClick = {
                         generating = true
+                        status = null
                         scope.launch {
-                            withContext(Dispatchers.IO) { runCatching { store.renewKeys() } }
+                            val outcome = withContext(Dispatchers.IO) {
+                                runCatching { store.renewKeys() }
+                            }
                             generating = false
-                            keyRevision++
+                            outcome
+                                .onSuccess {
+                                    keyRevision++
+                                    status = "Key generated (${it.fingerprint.take(16)}…)"
+                                }
+                                .onFailure {
+                                    Log.e("PagerAPP", "key generation failed", it)
+                                    status = "Key generation failed: " +
+                                        "${it.javaClass.simpleName}: ${it.message}"
+                                }
                         }
                     },
                 ) { Text(if (generating) "Generating…" else if (fingerprint.isBlank()) "Generate key" else "Renew key") }

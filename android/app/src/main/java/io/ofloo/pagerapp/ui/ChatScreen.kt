@@ -107,7 +107,7 @@ fun ChatScreen(contact: Contact, store: Store, onBack: () -> Unit) {
         text = ""
         failure = null
         scope.launch {
-            val ok = withContext(Dispatchers.IO) {
+            val result = withContext(Dispatchers.IO) {
                 runCatching {
                     PagerClient.notify(
                         store.serverUrl,
@@ -121,9 +121,9 @@ fun ChatScreen(contact: Contact, store: Store, onBack: () -> Unit) {
                         ),
                     )
                     true
-                }.getOrDefault(false)
+                }
             }
-            if (ok) {
+            if (result.isSuccess) {
                 store.addHistory(
                     listOf(
                         HistoryEntry(
@@ -143,7 +143,9 @@ fun ChatScreen(contact: Contact, store: Store, onBack: () -> Unit) {
                 )
                 revision++          // show it right away, don't wait for a poll
             } else {
-                failure = "Not sent — offline or the server is unreachable."
+                // Show the actual reason: "offline" was misleading when key generation failed.
+                val cause = result.exceptionOrNull()
+                failure = "Not sent: ${cause?.message ?: cause?.javaClass?.simpleName ?: "unknown error"}"
             }
         }
     }
