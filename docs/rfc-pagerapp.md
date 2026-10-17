@@ -294,6 +294,67 @@ sees the plaintext.
 Only the body is encrypted. The transport fields PagerMCP itself needs (`id`, `status`, `from`,
 `mid`, `read`) stay in the clear.
 
+### 8.1 Key lifecycle
+
+Keys expire — 6 to 12 months — and there are two ways to deal with that. They are **not** the same
+operation and clients must not conflate them:
+
+- **Extend** (default). Re-sign the *same* key with a later `KeyExpirationTime`. The fingerprint
+  does not change, so contacts do not have to relearn anything and no "key changed" warning is
+  raised. Nothing is re-encrypted.
+- **Renew** (deliberate). Generate a new key. The fingerprint changes, every contact has to adopt
+  the new key, and anything encrypted to the old one has to be dealt with first.
+
+Renewing runs in a fixed order so the user can never lock themselves out:
+
+1. **Generate** the new key.
+2. **Announce** it: send a key-only message (`pub`, no body) to **every** contact channel. Do not
+   wait for the next chat message — distribution must be deterministic.
+3. **Final sweep**: fetch every mailbox once more and decrypt anything still addressed to the old
+   key, so nothing in flight is lost.
+4. **Re-encrypt** whatever was stored under the old key (only necessary if the archive is kept
+   under the OpenPGP key; an archive held under a device key is already immune). Do it only after
+   step 3 succeeded.
+5. **Discard** the old key, only after 3 and 4 have completed.
+
+The steps are journalled: if the app is stopped or the network fails half-way, the client resumes
+where it left off rather than stranding a half-migrated archive.
+
+**Key updates are automatic on both sides.** A client learns the peer's key from the `pub` field of
+any message it receives, so a contact never has to accept or confirm anything. Extending keeps the
+same key; renewing changes it, which a client should surface as *"their key changed"* — with the
+fingerprint shown for a one-time comparison — rather than silently accepting it.
+
+### 8.2 Unreadable messages
+
+A message encrypted to a key the client no longer holds must be marked as unreadable (never shown
+as ciphertext), and the client then **automatically** sends a short notice back on the channel:
+"your message could not be read", carrying its own current `pub`. The sender learns the new key
+from that notice and may **choose** to re-send — the text is still in its history, so this is one
+action. Resending after the automatic key update means the retry is encrypted to the current key
+and arrives readable.
+
+Repeated unreadable notices are a signal that key distribution is not working for that contact
+(for instance, one side has been offline throughout), so they are surfaced rather than hidden.
+
+### 8.3 Rotation policy and crypto agility
+
+Modulus size and algorithm are **policy**, not constants: the key lifetime is the moment to change
+them. A client may double the modulus on a schedule (for example every five years) or move to a
+different algorithm, because every key expires and is re-issued anyway.
+
+Note what this does and does not buy: against a classical attacker, 2048 bits is already
+infeasible, and raising it further costs generation time without adding practical security. Against
+a future quantum computer, no RSA size helps — Shor's algorithm scales with qubits, not with the
+modulus.
+
+For a long horizon — messages stored today and decrypted years later — RSA is therefore the wrong
+foundation, and clients should move to a **hybrid post-quantum** layer: per-message X25519 +
+ML-KEM key agreement feeding AES-256-GCM, with the OpenPGP body nested inside so `gpg` can still
+read the inner layer. The payload reserves the room for it: an algorithm/version marker travels
+with the message, so old and new messages stay readable side by side and a migration never breaks
+the format.
+
 ---
 
 ## 9. Compatibility and versioning

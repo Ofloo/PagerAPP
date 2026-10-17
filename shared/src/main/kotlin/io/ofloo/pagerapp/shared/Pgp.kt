@@ -159,6 +159,63 @@ object Pgp {
         )
     }
 
+    /**
+     * Extends the expiry of an existing key ring, keeping the same keys and therefore the same
+     * fingerprint. Contacts see no change, so nothing has to be re-announced and nothing has to be
+     * re-encrypted — this is the default way to keep a key current.
+     */
+    fun extend(
+        secretArmored: String,
+        validityMonths: Int = DEFAULT_EXPIRY_MONTHS,
+        now: Date = Date(),
+    ): KeyMaterial {
+        ensureProvider()
+        val months = validityMonths.coerceIn(MIN_EXPIRY_MONTHS, MAX_EXPIRY_MONTHS).toLong()
+        val validitySeconds = Math.multiplyExact(months, MONTH_SECONDS)
+
+        val ring = PGPSecretKeyRing(
+            PGPUtil.getDecoderStream(ByteArrayInputStream(secretArmored.toByteArray())),
+            JcaKeyFingerprintCalculator(),
+        )
+        val signingKey = ring.getSecretKey()
+        val signingPrivateKey = signingKey.extractPrivateKey(null)
+
+        val reissued = mutableListOf<PGPSecretKey>()
+        for (secret in ring.secretKeys) {
+            val publicKey = secret.publicKey
+            val generator = PGPSignatureGenerator(
+                JcaPGPContentSignerBuilder(publicKey.algorithm, HashAlgorithmTags.SHA256)
+                    .setProvider(PROVIDER),
+            )
+            generator.init(
+                if (secret.isMasterKey) PGPSignature.DEFAULT_CERTIFICATION else PGPSignature.SUBKEY_BINDING,
+                signingPrivateKey,
+            )
+            generator.setHashedSubpackets(
+                PGPSignatureSubpacketGenerator().apply {
+                    setSignatureCreationTime(false, now)
+                    setKeyExpirationTime(false, validitySeconds)
+                }.generate(),
+            )
+            val resignature = generator.generate()
+            reissued += PGPSecretKey.replacePublicKey(
+                secret,
+                PGPPublicKey.addCertification(publicKey, resignature),
+            )
+        }
+
+        val updated = PGPSecretKeyRing(reissued)
+        val certificate = updated.toCertificate()
+        val createdSeconds = certificate.publicKey.creationTime.time / 1000L
+
+        return KeyMaterial(
+            publicArmored = armorOf { certificate.encode(it) },
+            secretArmored = armorOf { updated.encode(it) },
+            fingerprint = fingerprintOf(certificate.publicKey),
+            expiresAtEpochSeconds = createdSeconds + certificate.publicKey.validSeconds,
+        )
+    }
+
     /** Encrypts [plaintext] to the holder of [recipientPublicArmored]. */
     fun encrypt(plaintext: String, recipientPublicArmored: String): String {
         ensureProvider()
