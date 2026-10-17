@@ -38,6 +38,12 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -198,16 +204,29 @@ fun ChatScreen(contact: Contact, store: Store, onBack: () -> Unit) {
             )
         }
 
-        // No send button: the keyboard's action key turns into "send" (ImeAction.Send), so the
-        // field can use the full width.
+        // No send button: Enter sends (the IME's action key too), and Shift+Enter inserts a
+        // newline, so the field keeps the full width.
         OutlinedTextField(
             value = text,
             onValueChange = { text = it },
             placeholder = { Text("Message") },
-            singleLine = true,
+            maxLines = 6,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
             keyboardActions = KeyboardActions(onSend = { send() }),
-            modifier = Modifier.fillMaxWidth().padding(8.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(8.dp)
+                .onPreviewKeyEvent { event ->
+                    if (event.type == KeyEventType.KeyDown && event.key == Key.Enter) {
+                        if (event.isShiftPressed) false   // Shift+Enter: newline
+                        else {
+                            send()                        // Enter: send
+                            true
+                        }
+                    } else {
+                        false
+                    }
+                },
         )
     }
 }
