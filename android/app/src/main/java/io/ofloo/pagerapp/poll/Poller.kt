@@ -87,6 +87,11 @@ object Poller {
             val fromPeer = contact != null && page.from != null && page.from != contact.mySenderId
             val isMine = contact != null && page.from != null && page.from == contact.mySenderId
 
+            // Our own message seen in a shared mailbox would otherwise echo back as an incoming one.
+            // We already keep our side of the thread locally when sending, so skip it entirely —
+            // and deliberately do not ack it, or the peer would never receive it.
+            if (isMine) return@forEach
+
             // On a shared channel, learn who is on the other end from their first message.
             if (fromPeer && contact!!.awaitingReply) {
                 store.upsertContact(
