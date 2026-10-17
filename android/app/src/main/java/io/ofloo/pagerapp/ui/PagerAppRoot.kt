@@ -61,6 +61,7 @@ import io.ofloo.pagerapp.data.Store
 import io.ofloo.pagerapp.net.PagerClient
 import io.ofloo.pagerapp.poll.Poller
 import io.ofloo.pagerapp.poll.PollService
+import io.ofloo.pagerapp.shared.Contact
 import io.ofloo.pagerapp.shared.Page
 import io.ofloo.pagerapp.shared.buildAck
 import kotlinx.coroutines.Dispatchers
@@ -75,6 +76,7 @@ fun PagerAppRoot(onServiceChanged: (Boolean) -> Unit, onThemeChanged: (ThemeMode
     val store = remember { Store(context) }
     var uuid by remember { mutableStateOf(store.uuid) }
     var tab by remember { mutableIntStateOf(0) }
+    var chat by remember { mutableStateOf<Contact?>(null) }
     var setupError by remember { mutableStateOf<String?>(null) }
 
     // The private mailbox exists once and is created silently on first launch; sharing happens
@@ -114,6 +116,12 @@ fun PagerAppRoot(onServiceChanged: (Boolean) -> Unit, onThemeChanged: (ThemeMode
         if (!store.silenceMode) onServiceChanged(true)
     }
 
+    // An open conversation takes the whole screen, above the tabs.
+    chat?.let { contact ->
+        ChatScreen(contact = contact, store = store, onBack = { chat = null })
+        return
+    }
+
     Scaffold { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
             ScrollableTabRow(selectedTabIndex = tab, edgePadding = 0.dp) {
@@ -123,7 +131,7 @@ fun PagerAppRoot(onServiceChanged: (Boolean) -> Unit, onThemeChanged: (ThemeMode
             }
             when (tab) {
                 0 -> PagesScreen(store)
-                1 -> ContactsScreen(store)
+                1 -> ContactsScreen(store, onOpenChat = { chat = it })
                 2 -> RulesScreen(store)
                 else -> SettingsScreen(store, onServiceChanged, onThemeChanged)
             }

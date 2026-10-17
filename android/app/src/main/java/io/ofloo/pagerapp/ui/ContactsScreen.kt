@@ -58,7 +58,7 @@ import java.util.UUID
 enum class NfcMode { NONE, READ, WRITE }
 
 @Composable
-fun ContactsScreen(store: Store) {
+fun ContactsScreen(store: Store, onOpenChat: (Contact) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -68,7 +68,6 @@ fun ContactsScreen(store: Store) {
     var busy by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
     var sendTo by remember { mutableStateOf<Contact?>(null) }
-    var chatWith by remember { mutableStateOf<Contact?>(null) }
     var renameTarget by remember { mutableStateOf<Contact?>(null) }
     val config = store.config
 
@@ -291,7 +290,7 @@ fun ContactsScreen(store: Store) {
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (contact.kind == ContactKind.PERSON) {
-                            Button(onClick = { chatWith = contact }) { Text("Open chat") }
+                            Button(onClick = { onOpenChat(contact) }) { Text("Open chat") }
                         } else {
                             Button(onClick = { sendTo = contact }) { Text("Send") }
                         }
@@ -390,113 +389,6 @@ fun ContactsScreen(store: Store) {
             dismissButton = { TextButton(onClick = { renameTarget = null }) { Text("Cancel") } },
         )
     }
-
-    chatWith?.let { contact ->
-        ChatDialog(
-            contact = contact,
-            store = store,
-            onDismiss = { chatWith = null; refresh() },
-            onSend = { text ->
-                scope.launch {
-                    val ok = withContext(Dispatchers.IO) {
-                        runCatching {
-                            PagerClient.notify(
-                                store.serverUrl,
-                                contact.outbox,
-                                buildOutgoing(contact, store.displayName, text),
-                            )
-                            true
-                        }.getOrDefault(false)
-                    }
-                    if (ok) {
-                        // Keep our own side of the thread locally; the peer's ack clears the server copy.
-                        store.addHistory(
-                            listOf(
-                                HistoryEntry(
-                                    id = "out-${UUID.randomUUID()}",
-                                    status = STATUS_MESSAGE,
-                                    jobId = null,
-                                    project = null,
-                                    message = text,
-                                    createdAt = System.currentTimeMillis() / 1000.0,
-                                    ackUuid = null,
-                                    delivered = true,
-                                    from = contact.mySenderId,
-                                    fromName = store.displayName,
-                                    acked = true,
-                                ),
-                            ),
-                        )
-                    } else {
-                        status = "Send failed (offline or server?)"
-                    }
-                }
-            },
-        )
-    }
-}
-
-/** The chat thread with one person: reading *is* the acknowledgement, so there is no ACK button. */
-@Composable
-private fun ChatDialog(
-    contact: Contact,
-    store: Store,
-    onDismiss: () -> Unit,
-    onSend: (String) -> Unit,
-) {
-    var text by remember { mutableStateOf("") }
-    var revision by remember { mutableIntStateOf(0) }
-    val thread = remember(revision) {
-        store.history()
-            .filter { it.from == contact.senderId || it.from == contact.mySenderId }
-            .sortedBy { it.createdAt }
-            .takeLast(100)
-    }
-
-    // Opening the chat marks everything from the peer as read (and thus acknowledged).
-    LaunchedEffect(thread) {
-        thread.filter { it.from == contact.senderId }.forEach { store.markAcked(it.id) }
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(contact.name.ifBlank { "(unnamed)" }) },
-        text = {
-            Column(modifier = Modifier.height(360.dp)) {
-                LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                    items(thread) { entry ->
-                        val mine = entry.from == contact.mySenderId
-                        Text(
-                            buildString {
-                                append(if (mine) "me: " else "")
-                                append(entry.message ?: "(no text)")
-                            },
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
-                            color = if (mine) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurface,
-                        )
-                    }
-                }
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = { text = it },
-                    label = { Text("message") },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(
-                enabled = text.isNotBlank(),
-                onClick = {
-                    onSend(text.trim())
-                    text = ""
-                    revision++
-                },
-            ) { Text("Send") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
-    )
 }
 
 @Composable
