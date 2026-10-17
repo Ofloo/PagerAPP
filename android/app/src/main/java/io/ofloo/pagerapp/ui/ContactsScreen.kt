@@ -69,6 +69,7 @@ fun ContactsScreen(store: Store, onOpenChat: (Contact) -> Unit) {
     var status by remember { mutableStateOf<String?>(null) }
     var sendTo by remember { mutableStateOf<Contact?>(null) }
     var renameTarget by remember { mutableStateOf<Contact?>(null) }
+    var pastedInvite by remember { mutableStateOf("") }
     val config = store.config
 
     val activity = context.findActivity()
@@ -225,6 +226,20 @@ fun ContactsScreen(store: Store, onOpenChat: (Contact) -> Unit) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.labelSmall,
                     )
+                    OutlinedTextField(
+                        value = pastedInvite,
+                        onValueChange = { pastedInvite = it },
+                        label = { Text("or paste an invitation") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Button(
+                        enabled = pastedInvite.isNotBlank(),
+                        onClick = {
+                            addFromPayload(pastedInvite.trim(), UUID.randomUUID().toString())
+                            pastedInvite = ""
+                        },
+                    ) { Text("Add pasted invitation") }
                 }
             }
         }
@@ -332,6 +347,13 @@ fun ContactsScreen(store: Store, onOpenChat: (Contact) -> Unit) {
             text = {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Image(bitmap = qrBitmap(payload), contentDescription = "Contact QR code")
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        payload,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 9.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     Spacer(Modifier.height(8.dp))
                     Text(
                         "They open PagerAPP → Contacts → Scan contact (QR or NFC). " +
