@@ -60,6 +60,7 @@ import io.ofloo.pagerapp.shared.Contact
 import io.ofloo.pagerapp.shared.STATUS_MESSAGE
 import io.ofloo.pagerapp.shared.buildOutgoing
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -96,21 +97,22 @@ fun ChatScreen(contact: Contact, store: Store, onBack: () -> Unit) {
             .sortedBy { it.createdAt }
     }
 
-    // While this conversation is open, hold its stream: a reply lands in about a second instead of
-    // waiting for the polling interval, which is what made chats feel slow.
+    // An open conversation is the one place latency matters — you are talking. Poll its mailbox
+    // every couple of seconds rather than trusting a stream, which proved unreliable on some
+    // devices; a single mailbox polled this way costs almost nothing.
     LaunchedEffect(contact.id) {
-        withContext(Dispatchers.IO) {
-            runCatching {
-                PagerClient.streamEvents(contact.serverUrl, contact.inbox) { page ->
-                    Poller.handlePages(
+        while (true) {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    Poller.pollMailbox(
                         context,
                         mailbox = contact.inbox,
                         serverUrl = contact.serverUrl,
                         contact = contact,
-                        pages = listOf(page),
                     )
                 }
             }
+            delay(2_000)
         }
     }
 

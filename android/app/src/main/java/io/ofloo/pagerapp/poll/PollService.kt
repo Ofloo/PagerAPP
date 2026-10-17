@@ -70,26 +70,22 @@ class PollService : Service() {
     }
 
     /**
-     * Keeps a live SSE stream open on **every** mailbox — the private one and each contact channel.
-     * Chat messages used to wait for the polling interval, which is what made conversations feel
-     * slow; a stream brings them in about a second. The interval poll stays as a backstop.
+     * Holds a live SSE stream on the private mailbox only: that is where system pages (CI, alerts)
+     * land and where a second of latency matters. Chat channels are left to the interval poll —
+     * an open conversation polls itself every couple of seconds — which keeps the number of
+     * connections small and predictable.
      */
     private fun streamManagerLoop() {
         while (running) {
             val store = Store(this)
-            val targets = buildList {
-                store.uuid?.let { add(it to null) }
-                store.contacts().forEach { add(it.inbox to it) }
-            }
-            targets.forEach { (mailbox, contact) ->
-                if (streams[mailbox]?.isAlive != true) {
-                    streams[mailbox] = thread(
-                        start = true,
-                        isDaemon = true,
-                        name = "pager-stream-$mailbox",
-                        block = { streamMailbox(mailbox, contact) },
-                    )
-                }
+            val own = store.uuid
+            if (own != null && streams[own]?.isAlive != true) {
+                streams[own] = thread(
+                    start = true,
+                    isDaemon = true,
+                    name = "pager-stream-$own",
+                    block = { streamMailbox(own, null) },
+                )
             }
             if (!sleepQuietly(30_000)) return
         }
