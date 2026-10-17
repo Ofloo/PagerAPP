@@ -138,6 +138,7 @@ fun ChatScreen(contact: Contact, store: Store, onBack: () -> Unit) {
                             from = contact.mySenderId,
                             fromName = store.displayName,
                             acked = true,
+                            encrypted = false,
                         ),
                     ),
                 )
@@ -199,6 +200,7 @@ fun ChatScreen(contact: Contact, store: Store, onBack: () -> Unit) {
                             Spacer(Modifier.height(2.dp))
                             Text(
                                 buildString {
+                                    if (entry.encrypted) append("🔒 ")
                                     append(timeOf(entry.createdAt))
                                     if (mine) append("  ").append(if (entry.acked) "✓✓" else "✓")
                                 },

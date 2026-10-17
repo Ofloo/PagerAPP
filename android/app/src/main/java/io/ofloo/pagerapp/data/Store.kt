@@ -324,6 +324,8 @@ data class HistoryEntry(
     val fromName: String? = null,
     val acked: Boolean = false,
     val archived: Boolean = false,
+    /** True when this message arrived encrypted (or was sent encrypted) — shown as a padlock. */
+    val encrypted: Boolean = false,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("id", id)
@@ -338,6 +340,7 @@ data class HistoryEntry(
         .put("from_name", fromName)
         .put("acked", acked)
         .put("archived", archived)
+        .put("encrypted", encrypted)
 
     companion object {
         fun fromJson(o: JSONObject) = HistoryEntry(
@@ -353,6 +356,7 @@ data class HistoryEntry(
             fromName = o.optString("from_name").takeIf { it.isNotEmpty() && it != "null" },
             acked = o.optBoolean("acked", false),
             archived = o.optBoolean("archived", false),
+            encrypted = o.optBoolean("encrypted", false),
         )
 
         fun from(page: Page, delivered: Boolean) = HistoryEntry(
@@ -366,6 +370,7 @@ data class HistoryEntry(
             delivered = delivered,
             from = page.from,
             fromName = page.fromName,
+            encrypted = !page.enc.isNullOrBlank(),
         )
     }
 }
