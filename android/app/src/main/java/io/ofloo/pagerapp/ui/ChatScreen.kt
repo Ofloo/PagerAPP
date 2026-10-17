@@ -41,6 +41,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isShiftPressed
@@ -54,6 +55,7 @@ import androidx.compose.ui.unit.sp
 import io.ofloo.pagerapp.data.HistoryEntry
 import io.ofloo.pagerapp.data.Store
 import io.ofloo.pagerapp.net.PagerClient
+import io.ofloo.pagerapp.poll.Poller
 import io.ofloo.pagerapp.shared.Contact
 import io.ofloo.pagerapp.shared.STATUS_MESSAGE
 import io.ofloo.pagerapp.shared.buildOutgoing
@@ -75,6 +77,7 @@ import java.util.UUID
 @Composable
 fun ChatScreen(contact: Contact, store: Store, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     val listState = rememberLazyListState()
     var revision by remember { mutableIntStateOf(0) }
     var text by remember { mutableStateOf("") }
@@ -91,6 +94,24 @@ fun ChatScreen(contact: Contact, store: Store, onBack: () -> Unit) {
         store.history()
             .filter { it.from == contact.senderId || it.from == contact.mySenderId }
             .sortedBy { it.createdAt }
+    }
+
+    // While this conversation is open, hold its stream: a reply lands in about a second instead of
+    // waiting for the polling interval, which is what made chats feel slow.
+    LaunchedEffect(contact.id) {
+        withContext(Dispatchers.IO) {
+            runCatching {
+                PagerClient.streamEvents(contact.serverUrl, contact.inbox) { page ->
+                    Poller.handlePages(
+                        context,
+                        mailbox = contact.inbox,
+                        serverUrl = contact.serverUrl,
+                        contact = contact,
+                        pages = listOf(page),
+                    )
+                }
+            }
+        }
     }
 
     // Reading the peer's messages is the acknowledgement.
