@@ -309,6 +309,19 @@ fun SettingsScreen(
                     display = { "$it months" },
                     onSelect = { keyMonths = it; store.keyExpiryMonths = it },
                 )
+                Picker(
+                    label = "key size",
+                    value = keyBits,
+                    options = listOf(2048, 3072, 4096, 8192),
+                    display = { "$it bits" },
+                    onSelect = { keyBits = it; store.keyBits = it },
+                )
+                Text(
+                    "Bigger is not meaningfully stronger — 2048 is the OpenPGP norm — but generation " +
+                        "gets much slower: 8192 can take minutes on a phone and the app makes two keys.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelSmall,
+                )
                 Button(
                     enabled = !generating,
                     onClick = {
