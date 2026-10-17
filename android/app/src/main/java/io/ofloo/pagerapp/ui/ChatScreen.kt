@@ -198,22 +198,17 @@ fun ChatScreen(contact: Contact, store: Store, onBack: () -> Unit) {
             )
         }
 
-        Row(
+        // No send button: the keyboard's action key turns into "send" (ImeAction.Send), so the
+        // field can use the full width.
+        OutlinedTextField(
+            value = text,
+            onValueChange = { text = it },
+            placeholder = { Text("Message") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+            keyboardActions = KeyboardActions(onSend = { send() }),
             modifier = Modifier.fillMaxWidth().padding(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                placeholder = { Text("Message") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(onSend = { send() }),
-                modifier = Modifier.weight(1f),
-            )
-            Spacer(Modifier.width(8.dp))
-            Button(onClick = { send() }, enabled = text.isNotBlank()) { Text("Send") }
-        }
+        )
     }
 }
 
