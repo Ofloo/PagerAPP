@@ -31,9 +31,12 @@ class PollService : Service() {
     private val streamThread = thread(
         start = false,
         isDaemon = true,
-        name = "pager-stream",
-        block = ::streamLoop,
+        name = "pager-streams",
+        block = ::streamManagerLoop,
     )
+
+    /** One live stream per mailbox: the private one plus every contact channel. */
+    private val streams = java.util.concurrent.ConcurrentHashMap<String, Thread>()
 
     private val pollThread = thread(
         start = false,
@@ -65,27 +68,48 @@ class PollService : Service() {
         super.onDestroy()
     }
 
-    /** Holds the SSE stream on the private mailbox for near-instant delivery, reconnecting forever. */
-    private fun streamLoop() {
+    /**
+     * Keeps a live SSE stream open on **every** mailbox — the private one and each contact channel.
+     * Chat messages used to wait for the polling interval, which is what made conversations feel
+     * slow; a stream brings them in about a second. The interval poll stays as a backstop.
+     */
+    private fun streamManagerLoop() {
+        while (running) {
+            val store = Store(this)
+            val targets = buildList {
+                store.uuid?.let { add(it to null) }
+                store.contacts().forEach { add(it.inbox to it) }
+            }
+            targets.forEach { (mailbox, contact) ->
+                if (streams[mailbox]?.isAlive != true) {
+                    streams[mailbox] = thread(
+                        start = true,
+                        isDaemon = true,
+                        name = "pager-stream-$mailbox",
+                        block = { streamMailbox(mailbox, contact) },
+                    )
+                }
+            }
+            if (!sleepQuietly(30_000)) return
+        }
+    }
+
+    /** Holds one mailbox's stream, reconnecting with backoff and sweeping when it drops. */
+    private fun streamMailbox(mailbox: String, contact: Contact?) {
         var backoffMs = 1_000L
         while (running) {
             val store = Store(this)
-            val own = store.uuid
-            if (own == null) {
-                if (!sleepQuietly(5_000)) return
-                continue
-            }
             try {
-                PagerClient.streamEvents(store.serverUrl, own) { page ->
-                    Poller.handlePages(this, own, store.serverUrl, null, listOf(page))
+                PagerClient.streamEvents(store.serverUrl, mailbox) { page ->
+                    Poller.handlePages(this, mailbox, store.serverUrl, contact, listOf(page))
                 }
                 backoffMs = 1_000L
             } catch (e: Exception) {
-                Log.w(TAG, "sse ended: ${e.message}")
+                Log.w(TAG, "sse $mailbox ended: ${e.message}")
             }
             if (!running) return
             // Stream gone: sweep once (the server replays anything unacked) and back off.
-            runCatching { Poller.pollMailbox(this, own, store.serverUrl, null) }
+            runCatching { Poller.pollMailbox(this, mailbox, store.serverUrl, contact) }
             if (!sleepQuietly(backoffMs)) return
             backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
         }
