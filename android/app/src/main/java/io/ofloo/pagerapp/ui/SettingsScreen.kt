@@ -1,5 +1,8 @@
 package io.ofloo.pagerapp.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
@@ -27,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
@@ -51,6 +55,8 @@ fun SettingsScreen(
     var theme by remember { mutableStateOf(store.themeMode) }
     var reliable by remember { mutableStateOf(store.reliableDelivery) }
     var showAbout by remember { mutableStateOf(false) }
+    var restore by remember { mutableStateOf("") }
+    var status by remember { mutableStateOf<String?>(null) }
     val uriHandler = LocalUriHandler.current
     val context = LocalContext.current
 
@@ -244,6 +250,51 @@ fun SettingsScreen(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Mailbox", fontWeight = FontWeight.Bold)
+                Text(
+                    "Where your systems (CI, alerts, pager.sh) send pages. Keep this to yourself — " +
+                        "contacts never see it; each chat has its own channel.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+                Text(
+                    store.uuid ?: "(creating…)",
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        enabled = !store.uuid.isNullOrBlank(),
+                        onClick = {
+                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            cm.setPrimaryClip(ClipData.newPlainText("PagerAPP mailbox", store.uuid))
+                            status = "Mailbox UUID copied"
+                        },
+                    ) { Text("Copy UUID") }
+                }
+                OutlinedTextField(
+                    value = restore,
+                    onValueChange = { restore = it },
+                    label = { Text("restore: paste a mailbox UUID") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Button(
+                    enabled = restore.isNotBlank(),
+                    onClick = {
+                        val id = restore.trim().substringAfterLast('/')
+                        store.uuid = id
+                        restore = ""
+                        onServiceChanged(true)
+                        status = "Mailbox restored"
+                    },
+                ) { Text("Restore") }
+                status?.let { Text(it, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp) }
             }
         }
 

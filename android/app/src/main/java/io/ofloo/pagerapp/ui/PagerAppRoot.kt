@@ -67,7 +67,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private val TABS = listOf("Pages", "Contacts", "Rules", "Settings", "Setup")
+private val TABS = listOf("Pages", "Contacts", "Rules", "Settings")
 
 @Composable
 fun PagerAppRoot(onServiceChanged: (Boolean) -> Unit, onThemeChanged: (ThemeMode) -> Unit) {
@@ -75,21 +75,42 @@ fun PagerAppRoot(onServiceChanged: (Boolean) -> Unit, onThemeChanged: (ThemeMode
     val store = remember { Store(context) }
     var uuid by remember { mutableStateOf(store.uuid) }
     var tab by remember { mutableIntStateOf(0) }
+    var setupError by remember { mutableStateOf<String?>(null) }
+
+    // The private mailbox exists once and is created silently on first launch; sharing happens
+    // per contact, so there is nothing to "set up".
+    LaunchedEffect(uuid) {
+        if (uuid == null) {
+            val created = withContext(Dispatchers.IO) {
+                runCatching { PagerClient.createMailbox(store.serverUrl) }.getOrNull()
+            }
+            if (created != null) {
+                store.uuid = created
+                uuid = created
+                onServiceChanged(true)
+            } else {
+                setupError = "Cannot reach ${store.serverUrl} yet. Pull down on Pages to retry."
+            }
+        }
+    }
 
     if (uuid == null) {
-        SetupScreen(
-            store = store,
-            onReady = { newUuid ->
-                uuid = newUuid
-                onServiceChanged(true)
-                tab = 0
-            },
-        )
+        Column(
+            modifier = Modifier.fillMaxSize().padding(24.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text("Setting up PagerAPP…")
+            setupError?.let {
+                Spacer(Modifier.height(12.dp))
+                Text(it, color = MaterialTheme.colorScheme.error)
+            }
+        }
         return
     }
 
     // Resume polling whenever the app is opened with a configured mailbox.
-    androidx.compose.runtime.LaunchedEffect(Unit) {
+    LaunchedEffect(Unit) {
         if (!store.silenceMode) onServiceChanged(true)
     }
 
@@ -104,8 +125,7 @@ fun PagerAppRoot(onServiceChanged: (Boolean) -> Unit, onThemeChanged: (ThemeMode
                 0 -> PagesScreen(store)
                 1 -> ContactsScreen(store)
                 2 -> RulesScreen(store)
-                3 -> SettingsScreen(store, onServiceChanged, onThemeChanged)
-                else -> SetupScreen(store, onReady = { uuid = it }, showGenerate = false)
+                else -> SettingsScreen(store, onServiceChanged, onThemeChanged)
             }
         }
     }
