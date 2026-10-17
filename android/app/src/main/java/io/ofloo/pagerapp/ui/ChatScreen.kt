@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
@@ -222,6 +223,7 @@ fun ChatScreen(contact: Contact, store: Store, onBack: () -> Unit) {
             keyboardActions = KeyboardActions(onSend = { send() }),
             modifier = Modifier
                 .fillMaxWidth()
+                .navigationBarsPadding()
                 .padding(8.dp)
                 .onPreviewKeyEvent { event ->
                     if (event.type == KeyEventType.KeyDown && event.key == Key.Enter) {
