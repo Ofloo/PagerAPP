@@ -29,10 +29,21 @@ object Poller {
 
     private const val TAG = "PagerAPP"
 
+    /** Extend an existing key this many days before it lapses. */
+    private const val KEY_RENEW_LEAD_DAYS = 30L
+
     /** One polling pass over the private mailbox and every contact channel. */
     fun pollOnce(context: Context) {
         val store = Store(context)
         val own = store.uuid ?: return
+
+        // Keep our own key current without the user having to think about it: an existing key is
+        // extended (same fingerprint) well before it lapses, so nothing has to be re-announced.
+        if (store.keyDaysLeft() < KEY_RENEW_LEAD_DAYS) {
+            runCatching { store.extendOwnKeys() }
+                .onFailure { Log.w(TAG, "key extension failed: ${it.message}") }
+        }
+
         pollMailbox(context, mailbox = own, serverUrl = store.serverUrl, contact = null)
         // Each contact has their own receiving mailbox; our private inbox is never one of these.
         store.contacts().forEach { contact ->

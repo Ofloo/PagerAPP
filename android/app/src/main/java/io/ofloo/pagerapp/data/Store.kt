@@ -88,8 +88,27 @@ class Store(context: Context) {
             .putInt(KEY_BITS, v.coerceIn(Pgp.MIN_KEY_BITS, Pgp.MAX_KEY_BITS))
             .apply()
 
-    private fun generateKeys(): Pgp.KeyMaterial {
-        val keys = Pgp.generate("PagerAPP <pagerapp>", keyExpiryMonths, keyBits = keyBits)
+    /**
+     * Extends the current key's expiry, keeping the same fingerprint. This is the default way to
+     * keep a key current: contacts see no change, so nothing is re-announced or re-encrypted.
+     */
+    fun extendOwnKeys(): Pgp.KeyMaterial {
+        val current = ensureOwnKeys()
+        val extended = Pgp.extend(current.secretArmored, keyExpiryMonths)
+        return storeKeys(extended)
+    }
+
+    /** Whole days until the current key expires; a large number when none is known. */
+    fun keyDaysLeft(): Long {
+        val expires = ownKeyExpiresAt
+        if (expires <= 0) return Long.MAX_VALUE
+        return (expires - System.currentTimeMillis() / 1000L) / 86_400L
+    }
+
+    private fun generateKeys(): Pgp.KeyMaterial =
+        storeKeys(Pgp.generate("PagerAPP <pagerapp>", keyExpiryMonths, keyBits = keyBits))
+
+    private fun storeKeys(keys: Pgp.KeyMaterial): Pgp.KeyMaterial {
         prefs.edit()
             .putString(KEY_PUB, keys.publicArmored)
             .putString(KEY_SEC, keys.secretArmored)

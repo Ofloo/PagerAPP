@@ -322,29 +322,54 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.labelSmall,
                 )
+                fun doKey(action: () -> Pgp.KeyMaterial, what: String) {
+                    generating = true
+                    status = null
+                    scope.launch {
+                        val outcome = withContext(Dispatchers.IO) { runCatching { action() } }
+                        generating = false
+                        outcome
+                            .onSuccess {
+                                keyRevision++
+                                status = "$what ok (${it.fingerprint.take(16)}…)"
+                            }
+                            .onFailure {
+                                Log.e("PagerAPP", "$what failed", it)
+                                status = "$what failed: ${it.javaClass.simpleName}: ${it.message}"
+                            }
+                    }
+                }
+
                 Button(
                     enabled = !generating,
                     onClick = {
-                        generating = true
-                        status = null
-                        scope.launch {
-                            val outcome = withContext(Dispatchers.IO) {
-                                runCatching { store.renewKeys() }
-                            }
-                            generating = false
-                            outcome
-                                .onSuccess {
-                                    keyRevision++
-                                    status = "Key generated (${it.fingerprint.take(16)}…)"
-                                }
-                                .onFailure {
-                                    Log.e("PagerAPP", "key generation failed", it)
-                                    status = "Key generation failed: " +
-                                        "${it.javaClass.simpleName}: ${it.message}"
-                                }
-                        }
+                        doKey(
+                            { if (fingerprint.isBlank()) store.renewKeys() else store.extendOwnKeys() },
+                            if (fingerprint.isBlank()) "Key" else "Extension",
+                        )
                     },
-                ) { Text(if (generating) "Generating…" else if (fingerprint.isBlank()) "Generate key" else "Renew key") }
+                ) {
+                    Text(
+                        when {
+                            generating -> "Working…"
+                            fingerprint.isBlank() -> "Generate key"
+                            else -> "Extend (keep fingerprint)"
+                        },
+                    )
+                }
+                if (fingerprint.isNotBlank()) {
+                    TextButton(
+                        enabled = !generating,
+                        onClick = { doKey({ store.renewKeys() }, "New key") },
+                    ) { Text("New key (changes your fingerprint)") }
+                    Text(
+                        "A new key means contacts must adopt it — the app announces it to every chat " +
+                            "automatically, and can ask them to resend anything that arrived encrypted " +
+                            "to the old one.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
                 Text(
                     "The public key travels with every message, so a new one reaches your " +
                         "contacts automatically after a renewal.",
