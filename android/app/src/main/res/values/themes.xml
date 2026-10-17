@@ -1,5 +1,5 @@
 <resources>
     <style name="Theme.PagerAPP" parent="android:Theme.Material.Light.NoActionBar">
-        <item name="android:statusBarColor">#1B1B1F</item>
+        <item name="android:windowBackground">#F6FAF6</item>
     </style>
 </resources>

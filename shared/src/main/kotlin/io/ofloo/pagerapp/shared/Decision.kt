@@ -11,20 +11,20 @@ import java.time.LocalTime
  * 2. Bypass mode overrides the per-status time bound: every page is shown.
  * 3. Otherwise the status rule's time bound decides (NEVER / ALWAYS / ACTIVE_HOURS).
  */
-fun decide(page: Page, config: PagerConfig, now: LocalTime): Decision {
-    val rule = config.statusRules[page.status] ?: defaultRuleFor(page.status)
+fun decide(page: Page, config: PagerConfig, now: LocalTime, rule: StatusRule? = null): Decision {
+    val effective = rule ?: config.statusRules[page.status] ?: defaultRuleFor(page.status)
 
     if (config.silenceMode) {
         return Decision(
             notify = false,
             action = NotifyAction.SILENT,
             channels = emptySet(),
-            vibration = rule.vibration,
+            vibration = effective.vibration,
             reason = "silence mode",
         )
     }
 
-    val withinTimeBound = when (rule.timeBound) {
+    val withinTimeBound = when (effective.timeBound) {
         TimeBound.NEVER -> false
         TimeBound.ALWAYS -> true
         TimeBound.ACTIVE_HOURS -> config.activeWindows.any { it.contains(now) }
@@ -34,7 +34,7 @@ fun decide(page: Page, config: PagerConfig, now: LocalTime): Decision {
     val reason = when {
         config.bypassMode -> "bypass mode"
         withinTimeBound -> "within time bound"
-        else -> "outside time bound (${rule.timeBound})"
+        else -> "outside time bound (${effective.timeBound})"
     }
 
     if (!show) {
@@ -42,7 +42,7 @@ fun decide(page: Page, config: PagerConfig, now: LocalTime): Decision {
             notify = false,
             action = NotifyAction.SILENT,
             channels = emptySet(),
-            vibration = rule.vibration,
+            vibration = effective.vibration,
             reason = reason,
         )
     }
@@ -54,9 +54,22 @@ fun decide(page: Page, config: PagerConfig, now: LocalTime): Decision {
 
     return Decision(
         notify = true,
-        action = rule.action,
+        action = effective.action,
         channels = channels,
-        vibration = rule.vibration,
+        vibration = effective.vibration,
         reason = reason,
     )
 }
+
+/**
+ * The decision for a message arriving on a chat channel, using the contact's chosen level from
+ * [PagerConfig.chatLevels] instead of a status rule. Silence and bypass still apply, and "always"
+ * means "ignores this app's active hours" — the phone's own silent/Do-Not-Disturb still rules.
+ */
+fun decideForContact(contact: Contact, config: PagerConfig, now: LocalTime): Decision =
+    decide(
+        page = Page(id = "", status = STATUS_MESSAGE),
+        config = config,
+        now = now,
+        rule = config.chatLevels[contact.level] ?: defaultChatLevels()[LEVEL_NORMAL],
+    )

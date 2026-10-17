@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PagerAPP — Privacy Policy</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { max-width: 46rem; margin: 0 auto; padding: 2rem 1.25rem 4rem;
+         font: 16px/1.65 -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+  h1 { font-size: 1.7rem; margin-bottom: .25rem; }
+  h2 { font-size: 1.2rem; margin-top: 2rem; }
+  .muted { opacity: .7; font-size: .9rem; }
+  code { background: rgba(127,127,127,.18); padding: .1em .35em; border-radius: 4px; }
+  ul { padding-left: 1.2rem; }
+</style>
+</head>
+<body>
+<h1>PagerAPP — Privacy Policy</h1>
+<p class="muted">Last updated: 2026-10-16</p>
+
+<p>PagerAPP is a client for a PagerMCP server. This policy explains what the app does with your
+data. In short: <strong>PagerAPP does not collect, transmit, or share any personal data.</strong></p>
+
+<h2>What the app stores on your device</h2>
+<p>PagerAPP stores the following locally, in the app's private storage, and nowhere else:</p>
+<ul>
+  <li>A <strong>mailbox UUID</strong> that identifies your mailbox on the PagerMCP server you configure.</li>
+  <li>Your <strong>settings</strong>: server URL, polling interval, per-status rules, active hours, and
+      bypass/silence/watch preferences.</li>
+  <li>A <strong>local history</strong> of pages you have received, and a set of already-seen page IDs used to
+      avoid showing duplicates.</li>
+</ul>
+<p>None of this is uploaded anywhere by PagerAPP. You can erase all of it at any time by clearing
+the app's data or uninstalling the app.</p>
+
+<h2>Network connections</h2>
+<p>PagerAPP communicates <strong>only</strong> with the PagerMCP server address that you enter yourself, over
+the connection you configure (for example HTTPS). It uses that connection to create a mailbox,
+fetch queued pages, and — only when you tap ACK on a page that opted in — to send an
+acknowledgement back. It sends no other data, and no data to the developer or any third party.</p>
+
+<h2>Permissions</h2>
+<ul>
+  <li><strong>Internet</strong> — to reach your PagerMCP server.</li>
+  <li><strong>Notifications</strong> — to show pages as notifications.</li>
+  <li><strong>Camera</strong> — used only if you choose to scan a mailbox QR code; the image is processed on
+      your device and is never uploaded.</li>
+  <li><strong>Run at startup / foreground service</strong> — to keep polling for pages in the background and to
+      resume polling after a reboot.</li>
+</ul>
+
+<h2>Analytics, ads, and tracking</h2>
+<p>PagerAPP contains <strong>no</strong> analytics, <strong>no</strong> advertising, and <strong>no</strong> tracking SDKs. There is no
+account, no sign-in, and no telemetry.</p>
+
+<h2>Children</h2>
+<p>PagerAPP is a developer/operations tool and is not directed at children.</p>
+
+<h2>Changes</h2>
+<p>If this policy changes, the updated version will be published at this URL.</p>
+
+<h2>Contact</h2>
+<p>For questions about this policy, contact the developer at the address listed on the Google Play
+store page for PagerAPP.</p>
+</body>
+</html>

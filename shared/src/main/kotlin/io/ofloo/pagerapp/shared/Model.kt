@@ -49,12 +49,19 @@ data class PagerConfig(
     val bypassMode: Boolean = false,
     val silenceMode: Boolean = false,
     val watchMode: WatchMode = WatchMode.OFF,
+    /**
+     * Named notification levels offered per chat, e.g. "Important" = always reachable,
+     * "Normal" = active hours, "Silent" = list only. A [Contact] stores the name it uses, so
+     * retuning a level changes it for everyone on that level.
+     */
+    val chatLevels: Map<String, StatusRule> = defaultChatLevels(),
 )
 
 /**
  * A PagerMCP page. The payload is opaque JSON; these are the fields PagerAPP reads.
  * [logs] and [prio] are not used by the decision logic but are kept for the UI.
  * [ackUuid], when present, is the mailbox an ACK may be sent back to.
+ * [from]/[fromName] identify the sender when the page came from a known [Contact].
  */
 data class Page(
     val id: String,
@@ -65,6 +72,18 @@ data class Page(
     val logs: String? = null,
     val prio: String? = null,
     val ackUuid: String? = null,
+    val from: String? = null,
+    val fromName: String? = null,
+    /** The sender's armored OpenPGP public key, attached to every outgoing message. */
+    val pub: String? = null,
+    /** The message body, encrypted to the recipient's public key (see [Pgp]). */
+    val enc: String? = null,
+    /** Client-side id of the message, so the peer can send a read receipt for it. */
+    val mid: String? = null,
+    /** Set on a receipt-only page: the [mid] the sender has just read. */
+    val read: String? = null,
+    /** Server `created_at` in Unix seconds; 0 when absent. Used only for ordering. */
+    val createdAt: Double = 0.0,
 ) {
     /** ACK is opt-in per page: available only when the page carries an [ackUuid]. */
     val ackAvailable: Boolean get() = !ackUuid.isNullOrBlank()

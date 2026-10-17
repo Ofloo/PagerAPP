@@ -164,6 +164,22 @@ class PageParserTest {
     fun parsesStringEncodedStatus() {
         assertEquals(3, PageParser.parse(mapOf("id" to "m", "status" to "3")).status)
     }
+
+    @Test
+    fun mapsTextualStatusesFromPagerSh() {
+        assertEquals(0, PageParser.parse(mapOf("id" to "m", "status" to "success")).status)
+        assertEquals(1, PageParser.parse(mapOf("id" to "m", "status" to "warning")).status)
+        assertEquals(2, PageParser.parse(mapOf("id" to "m", "status" to "failed")).status)
+        assertEquals(3, PageParser.parse(mapOf("id" to "m", "status" to "critical")).status)
+        assertEquals(4, PageParser.parse(mapOf("id" to "m", "status" to "in progress")).status)
+        assertEquals(5, PageParser.parse(mapOf("id" to "m", "status" to "queued")).status)
+        assertEquals(PageParser.parse(mapOf("id" to "m", "status" to "Success")).status, 0)
+    }
+
+    @Test
+    fun unknownTextStatusIsSurfacedNotDropped() {
+        assertEquals(STATUS_UNKNOWN_TEXT, PageParser.parse(mapOf("id" to "m", "status" to "banana")).status)
+    }
 }
 
 class AckTest {
@@ -190,5 +206,118 @@ class AckTest {
         assertEquals("me", ack.payload["acknowledged_by"])
         assertEquals("job-9", ack.payload["JOB_ID"])
         assertEquals("m1", ack.payload["in_reply_to"])
+        assertEquals("Acknowledged", ack.payload["message"])
+    }
+
+    @Test
+    fun ackCarriesTheOptionalNote() {
+        val withNote = buildAck(page("peer"), ownUuid = "me", note = "  looking into it  ")
+        assertEquals("looking into it", withNote!!.payload["message"])
+
+        val blankNote = buildAck(page("peer"), ownUuid = "me", note = "   ")
+        assertEquals("Acknowledged", blankNote!!.payload["message"])
+    }
+}
+
+class ContactQrTest {
+    private val server = "https://pager.ofloo.io"
+
+    @Test
+    fun roundTripsChannelNameAndSenderId() {
+        val inviter = Contact(
+            name = "Alice van Dijk",
+            serverUrl = server,
+            uuid = "chan-1",
+            mySenderId = "alice-sid",
+        )
+        val scanned = ContactQr.decode(
+            ContactQr.encode(inviter),
+            fallbackServer = "x",
+            mySenderId = "bob-sid",
+        )!!
+        assertEquals("chan-1", scanned.uuid)
+        assertEquals(server, scanned.serverUrl)
+        assertEquals("Alice van Dijk", scanned.name)
+        assertEquals("alice-sid", scanned.senderId)
+        assertEquals("bob-sid", scanned.mySenderId)
+        assertFalse(scanned.awaitingReply)
+    }
+
+    @Test
+    fun encodesSpecialCharactersSafely() {
+        val c = Contact(name = "A&B = C/D", serverUrl = server, uuid = "u-1", mySenderId = "s&1")
+        val encoded = ContactQr.encode(c)
+        assertEquals(1, encoded.count { it == '?' })
+        val decoded = ContactQr.decode(encoded, fallbackServer = "x")!!
+        assertEquals("A&B = C/D", decoded.name)
+        assertEquals("s&1", decoded.senderId)
+    }
+
+    @Test
+    fun bareUuidUsesFallbackServerAndNeedsAReply() {
+        val c = ContactQr.decode("  dddd-eeee-ffff  ", fallbackServer = server)!!
+        assertEquals("dddd-eeee-ffff", c.uuid)
+        assertEquals(server, c.serverUrl)
+        assertTrue(c.awaitingReply)
+    }
+
+    @Test
+    fun acceptsUrlShapedInput() {
+        val c = ContactQr.decode("$server/mailboxes/1234-5678", fallbackServer = "other")!!
+        assertEquals("1234-5678", c.uuid)
+        assertEquals("other", c.serverUrl)
+    }
+
+    @Test
+    fun rejectsEmptyInput() {
+        assertEquals(null, ContactQr.decode("   ", fallbackServer = server))
+    }
+}
+
+class SendTest {
+    private val server = "https://pager.ofloo.io"
+    private val bob = Contact(
+        name = "Bob",
+        serverUrl = server,
+        uuid = "bob-channel",
+        senderId = "bob-sid",
+        mySenderId = "me-sid",
+    )
+
+    @Test
+    fun outgoingStampsOurSenderIdNeverAMailbox() {
+        val p = buildOutgoing(bob, ownName = "Me", message = "hi")
+        assertEquals("me-sid", p["from"])
+        assertEquals("Me", p["from_name"])
+        assertEquals("hi", p["message"])
+        assertEquals(STATUS_MESSAGE, p["status"])
+    }
+
+    @Test
+    fun onlyTheReceiverAcks() {
+        val mine = Page(id = "1", status = STATUS_MESSAGE, from = "me-sid")
+        val theirs = Page(id = "2", status = STATUS_MESSAGE, from = "bob-sid")
+        assertFalse(shouldAck(bob, mine))
+        assertTrue(shouldAck(bob, theirs))
+    }
+
+    @Test
+    fun splitsChannelIntoBothDirectionsOldestFirst() {
+        val pages = listOf(
+            Page(id = "t2", status = STATUS_MESSAGE, from = "bob-sid", createdAt = 20.0),
+            Page(id = "m1", status = STATUS_MESSAGE, from = "me-sid", createdAt = 10.0),
+            Page(id = "t1", status = STATUS_MESSAGE, from = "bob-sid", createdAt = 5.0),
+        )
+        assertEquals(listOf("t1", "t2"), peerMessages(bob, pages).map { it.id })
+        assertEquals(listOf("m1"), ownMessages(bob, pages).map { it.id })
+    }
+
+    @Test
+    fun resolvesContactBySenderId() {
+        val fromBob = Page(id = "1", status = STATUS_MESSAGE, from = "bob-sid")
+        assertEquals(bob, contactFor(fromBob, listOf(bob)))
+
+        val unknown = Page(id = "2", status = STATUS_MESSAGE, from = "carol-sid")
+        assertEquals(null, contactFor(unknown, listOf(bob)))
     }
 }

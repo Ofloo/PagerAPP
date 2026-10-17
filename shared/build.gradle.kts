@@ -9,6 +9,8 @@ repositories {
 }
 
 dependencies {
+    api("org.bouncycastle:bcpg-jdk18on:1.86")
+    api("org.bouncycastle:bcprov-jdk18on:1.86")
     testImplementation(kotlin("test"))
 }
 
@@ -27,5 +29,7 @@ tasks.test {
     useJUnitPlatform()
     testLogging {
         events("passed", "skipped", "failed")
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        showCauses = true
     }
 }

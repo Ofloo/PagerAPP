@@ -15,6 +15,9 @@ object Notifications {
     const val CHANNEL_PAGES = "pages"
     const val CHANNEL_SERVICE = "service"
 
+    /** Person-to-person chats: a separate, quieter channel so the phone can treat them apart. */
+    const val CHANNEL_MESSAGES = "messages"
+
     fun ensureChannels(context: Context) {
         val nm = context.getSystemService(NotificationManager::class.java)
         val pages = NotificationChannel(
@@ -22,12 +25,18 @@ object Notifications {
             context.getString(R.string.notif_channel_name),
             NotificationManager.IMPORTANCE_HIGH,
         ).apply { description = context.getString(R.string.notif_channel_desc) }
+        val messages = NotificationChannel(
+            CHANNEL_MESSAGES,
+            context.getString(R.string.msg_channel_name),
+            NotificationManager.IMPORTANCE_DEFAULT,
+        ).apply { description = context.getString(R.string.msg_channel_desc) }
         val service = NotificationChannel(
             CHANNEL_SERVICE,
             context.getString(R.string.poll_channel_name),
             NotificationManager.IMPORTANCE_MIN,
         )
         nm.createNotificationChannel(pages)
+        nm.createNotificationChannel(messages)
         nm.createNotificationChannel(service)
     }
 

@@ -29,3 +29,7 @@ dist/
 .idea/
 .vscode/
 .DS_Store
+
+# Play publishing credentials (service account JSON) — never commit
+play-service-account.json
+*.play-service-account.json

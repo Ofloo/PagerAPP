@@ -17,14 +17,14 @@ val hasReleaseSigning = keystoreProps.getProperty("storeFile") != null
 
 android {
     namespace = "io.ofloo.pagerapp"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "io.ofloo.pagerapp"
         minSdk = 26
-        targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        targetSdk = 36
+        versionCode = 14
+        versionName = "1.0"
     }
 
     signingConfigs {
@@ -53,6 +53,21 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
+    }
+
+    // Bouncy Castle ships duplicate OSGI manifests and licence files across its jars.
+    packaging {
+        resources {
+            excludes += setOf(
+                "META-INF/versions/9/OSGI-INF/MANIFEST.MF",
+                "META-INF/LICENSE.md",
+                "META-INF/NOTICE.md",
+                "META-INF/*.SF",
+                "META-INF/*.DSA",
+                "META-INF/*.RSA",
+            )
+        }
     }
 
     compileOptions {
@@ -73,6 +88,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-compose:1.9.2")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
+    implementation("androidx.work:work-runtime-ktx:2.10.5")
 
     val composeBom = platform("androidx.compose:compose-bom:2024.09.03")
     implementation(composeBom)

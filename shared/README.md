@@ -8,10 +8,13 @@ module with no Android/iOS SDK imports, so its unit tests run on any JDK (and in
 - `Defaults.kt` — `defaultRuleFor(status)`, the default 0–5 behaviour table.
 - `Decision.kt` — `decide(page, config, now)`: the pure precedence rules (silence > bypass >
   time bound).
-- `Deduplicator.kt` — at-most-once per message `id`.
+- `Deduplicator.kt` — at-least-once per message `id` (a repeat is a retry, not a new page).
 - `Ack.kt` — `buildAck(page, ownUuid)`: constructs the ACK `POST /notify` target + payload
   when the page carries an `ack_uuid`; returns null otherwise.
-- `PageParser.kt` — reads the fields PagerAPP uses from an already-decoded payload map.
+- `Contact.kt` / `ContactQr.kt` — the contact record and its `pagerapp://contact?…` QR payload.
+- `Send.kt` — `buildOutgoing(...)`, `contactFor(...)`, `conversationWith(...)` for two-way messaging.
+- `PageParser.kt` — reads the fields PagerAPP uses from an already-decoded payload map; accepts
+  both numeric and textual `status`.
 - `src/test/kotlin/.../LogicTest.kt` — the tests.
 
 Run the tests (canonical): `docker/test-shared.sh`. Do not install a JDK/Gradle on the host.

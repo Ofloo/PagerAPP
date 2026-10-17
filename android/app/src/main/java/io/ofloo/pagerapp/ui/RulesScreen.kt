@@ -30,6 +30,7 @@ import io.ofloo.pagerapp.data.Store
 import io.ofloo.pagerapp.shared.ActiveWindow
 import io.ofloo.pagerapp.shared.NotifyAction
 import io.ofloo.pagerapp.shared.StatusRule
+import io.ofloo.pagerapp.shared.STATUS_MESSAGE
 import io.ofloo.pagerapp.shared.TimeBound
 import io.ofloo.pagerapp.shared.VibrationPattern
 import io.ofloo.pagerapp.shared.defaultRuleFor
@@ -44,7 +45,7 @@ fun RulesScreen(store: Store) {
     var config by remember { mutableStateOf(store.config) }
     var customInput by remember { mutableStateOf("") }
     val defined = remember(config) {
-        (config.statusRules.keys + (0..5)).toSortedSet()
+        (config.statusRules.keys + (0..5) + STATUS_MESSAGE).toSortedSet()
     }
 
     fun update(status: Int, rule: StatusRule) {

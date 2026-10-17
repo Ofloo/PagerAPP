@@ -1,7 +1,5 @@
 package io.ofloo.pagerapp.ui
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -28,8 +26,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.journeyapps.barcodescanner.ScanContract
-import com.journeyapps.barcodescanner.ScanOptions
 import io.ofloo.pagerapp.data.Store
 import io.ofloo.pagerapp.net.PagerClient
 import kotlinx.coroutines.Dispatchers
@@ -52,14 +48,17 @@ fun SetupScreen(
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    val scanner = rememberLauncherForActivityResult(ScanContract()) { result ->
-        val scanned = result.contents?.trim()
-        if (!scanned.isNullOrBlank()) {
+    val scan = rememberQrScanner(
+        prompt = "Scan the PagerAPP mailbox QR code",
+        onResult = { scanned ->
             val uuid = scanned.substringAfterLast('/').trim()
             store.uuid = uuid
             onReady(uuid)
-        }
-    }
+        },
+        onDenied = {
+            error = "Camera permission is needed to scan. You can also paste the UUID below."
+        },
+    )
 
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp),
@@ -102,14 +101,7 @@ fun SetupScreen(
         Text("or", color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(12.dp))
 
-        OutlinedButton(onClick = {
-            scanner.launch(
-                ScanOptions()
-                    .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                    .setPrompt("Scan the PagerAPP mailbox QR code")
-                    .setBeepEnabled(false),
-            )
-        }) { Text("Scan QR code") }
+        OutlinedButton(onClick = { scan() }) { Text("Scan QR code") }
 
         Spacer(Modifier.height(12.dp))
         OutlinedTextField(

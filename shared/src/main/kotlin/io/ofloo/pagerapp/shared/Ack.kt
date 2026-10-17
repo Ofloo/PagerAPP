@@ -13,14 +13,17 @@ data class AckRequest(val targetUuid: String, val payload: Map<String, Any?>)
  * Builds the ACK for [page], sent by the device whose own mailbox is [ownUuid]. Returns null
  * when the page carries no `ack_uuid`, so callers cannot ACK a page that did not opt in.
  *
+ * [note] is an optional free-text message from the acknowledger; when blank the message is the
+ * plain "Acknowledged".
+ *
  * This is pure construction; the actual `POST /notify` is the platform layer's job.
  */
-fun buildAck(page: Page, ownUuid: String): AckRequest? {
+fun buildAck(page: Page, ownUuid: String, note: String? = null): AckRequest? {
     val target = page.ackUuid?.takeIf { it.isNotBlank() } ?: return null
     val payload = linkedMapOf<String, Any?>(
         "PROJECT" to "PagerAPP",
         "status" to STATUS_ACKNOWLEDGED,
-        "message" to "Acknowledged",
+        "message" to (note?.trim()?.takeIf { it.isNotEmpty() } ?: "Acknowledged"),
         "acknowledged_by" to ownUuid,
     )
     if (page.jobId != null) payload["JOB_ID"] = page.jobId

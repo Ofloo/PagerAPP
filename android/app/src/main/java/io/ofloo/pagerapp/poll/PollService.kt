@@ -6,34 +6,40 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import io.ofloo.pagerapp.R
-import io.ofloo.pagerapp.data.HistoryEntry
 import io.ofloo.pagerapp.data.Store
 import io.ofloo.pagerapp.net.PagerClient
 import io.ofloo.pagerapp.notify.Notifications
-import io.ofloo.pagerapp.notify.Notifier
-import io.ofloo.pagerapp.shared.Decision
-import io.ofloo.pagerapp.shared.Page
-import io.ofloo.pagerapp.shared.decide
-import java.time.LocalTime
 import kotlin.concurrent.thread
 
 /**
- * Foreground service that polls PagerMCP on the user-configured interval.
+ * Foreground service used in "reliable" mode.
  *
- * Interval handling: because the interval is user-set and may be < 15 min (the WorkManager
- * periodic minimum), the service keeps itself alive and schedules the next tick itself. For
- * intervals >= 2 min it sleeps with an alarm; for shorter intervals it uses a wake lock so the
- * tick is not deferred by Doze.
+ * Two cooperating loops:
+ * - a **stream** thread holding `GET /mailboxes/{id}/events` (SSE) on the private mailbox, so a
+ *   page arrives in about a second;
+ * - a **poll** thread on the user's interval, covering every contact channel and acting as a
+ *   backstop if the stream cannot be established (blocked proxy, no SSE support).
+ *
+ * Both funnel into [Poller.handlePages], which deduplicates, so an overlap between the two never
+ * shows a page twice.
  */
 class PollService : Service() {
 
-    private val worker = thread(
+    private val streamThread = thread(
+        start = false,
+        isDaemon = true,
+        name = "pager-stream",
+        block = ::streamLoop,
+    )
+
+    private val pollThread = thread(
         start = false,
         isDaemon = true,
         name = "pager-poll",
-        block = ::loop,
+        block = ::pollLoop,
     )
 
     @Volatile private var running = true
@@ -45,7 +51,8 @@ class PollService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (worker.state == Thread.State.NEW) worker.start()
+        if (streamThread.state == Thread.State.NEW) streamThread.start()
+        if (pollThread.state == Thread.State.NEW) pollThread.start()
         return START_STICKY
     }
 
@@ -53,69 +60,68 @@ class PollService : Service() {
 
     override fun onDestroy() {
         running = false
-        worker.interrupt()
+        streamThread.interrupt()
+        pollThread.interrupt()
         super.onDestroy()
     }
 
-    private fun loop() {
-        val store = Store(this)
+    /** Holds the SSE stream on the private mailbox for near-instant delivery, reconnecting forever. */
+    private fun streamLoop() {
+        var backoffMs = 1_000L
         while (running) {
-            val interval = store.pollSeconds
+            val store = Store(this)
+            val own = store.uuid
+            if (own == null) {
+                if (!sleepQuietly(5_000)) return
+                continue
+            }
+            try {
+                PagerClient.streamEvents(store.serverUrl, own) { page ->
+                    Poller.handlePages(this, own, store.serverUrl, null, listOf(page))
+                }
+                backoffMs = 1_000L
+            } catch (e: Exception) {
+                Log.w(TAG, "sse ended: ${e.message}")
+            }
+            if (!running) return
+            // Stream gone: sweep once (the server replays anything unacked) and back off.
+            runCatching { Poller.pollMailbox(this, own, store.serverUrl, null) }
+            if (!sleepQuietly(backoffMs)) return
+            backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
+        }
+    }
+
+    /** Interval polling across the private mailbox and every contact channel. */
+    private fun pollLoop() {
+        while (running) {
+            val interval = PollInterval.seconds(this)
             var lock: PowerManager.WakeLock? = null
             try {
                 lock = acquireWakeLock(interval)
-                tick(store)
+                Poller.pollOnce(this)
             } catch (_: Exception) {
                 // Network/server/permission errors are expected; retry on the next tick.
                 // Never let the worker thread die, or the whole process is taken down.
             } finally {
                 runCatching { lock?.let { if (it.isHeld) it.release() } }
             }
-            sleepInterval(interval)
+            if (!sleepQuietly(interval * 1000L)) return
         }
     }
 
-    private fun tick(store: Store) {
-        val uuid = store.uuid ?: return
-        val pages = PagerClient.messages(store.serverUrl, uuid)
-        if (pages.isEmpty()) return
-
-        val seen = store.dedupeSnapshot()
-        val fresh = pages.filter { it.id !in seen }
-        if (fresh.isEmpty()) return
-
-        val now = LocalTime.now()
-        val config = store.effectiveConfig()
-        val history = mutableListOf<HistoryEntry>()
-
-        fresh.forEach { page ->
-            val decision: Decision = decide(page, config, now)
-            val deliver = decision.notify
-            if (deliver) {
-                // Watch-only still keeps a silent phone record so pages are not lost; watch
-                // delivery itself is a future platform-companion integration.
-                val audible = Notifications.audible(decision) && Notifications.phoneChannels(decision)
-                Notifier.post(this, page, audible = audible)
-            }
-            history += HistoryEntry.from(page, delivered = deliver)
-        }
-
-        store.rememberSeen(fresh.map { it.id })
-        store.addHistory(history)
-    }
-
-    private fun sleepInterval(intervalSeconds: Int) {
-        // Split the wait so stop/interrupt is responsive and to avoid drifting.
-        var remainingMs = intervalSeconds * 1000L
-        while (running && remainingMs > 0) {
-            val chunk = minOf(remainingMs, 60_000L)
+    /** Sleeps in chunks so stop/interrupt stays responsive. Returns false when interrupted. */
+    private fun sleepQuietly(totalMs: Long): Boolean {
+        var remaining = totalMs
+        while (running && remaining > 0) {
+            val chunk = minOf(remaining, 60_000L)
             try {
                 Thread.sleep(chunk)
             } catch (_: InterruptedException) {
-                return
+                return false
             }
-            remainingMs -= chunk
+            remaining -= chunk
         }
+        return running
     }
 
     private fun acquireWakeLock(intervalSeconds: Int): PowerManager.WakeLock? {
@@ -137,6 +143,7 @@ class PollService : Service() {
             .build()
 
     companion object {
+        private const val TAG = "PagerAPP"
         private const val NOTIF_ID = 1
 
         fun start(context: Context) {

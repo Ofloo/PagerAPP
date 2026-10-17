@@ -1,5 +1,7 @@
 package io.ofloo.pagerapp.ui
 
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,6 +17,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -22,20 +25,34 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import io.ofloo.pagerapp.data.Store
+import io.ofloo.pagerapp.AppLinks
+import io.ofloo.pagerapp.ThemeMode
+import io.ofloo.pagerapp.notify.Notifications
 import io.ofloo.pagerapp.shared.WatchMode
 
 @Composable
-fun SettingsScreen(store: Store, onServiceChanged: (Boolean) -> Unit) {
+fun SettingsScreen(
+    store: Store,
+    onServiceChanged: (Boolean) -> Unit,
+    onThemeChanged: (ThemeMode) -> Unit,
+) {
     var bypass by remember { mutableStateOf(store.bypassMode) }
     var silence by remember { mutableStateOf(store.silenceMode) }
     var poll by remember { mutableStateOf(store.pollSeconds.toString()) }
     var server by remember { mutableStateOf(store.serverUrl) }
     var config by remember { mutableStateOf(store.config) }
+    var theme by remember { mutableStateOf(store.themeMode) }
+    var reliable by remember { mutableStateOf(store.reliableDelivery) }
+    var showAbout by remember { mutableStateOf(false) }
+    val uriHandler = LocalUriHandler.current
+    val context = LocalContext.current
 
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()),
@@ -62,6 +79,29 @@ fun SettingsScreen(store: Store, onServiceChanged: (Boolean) -> Unit) {
                         store.silenceMode = it
                         if (it) { bypass = false; store.bypassMode = false }
                         onServiceChanged(!it)
+                    },
+                )
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Appearance", fontWeight = FontWeight.Bold)
+                Picker(
+                    label = "theme",
+                    value = theme,
+                    options = ThemeMode.entries,
+                    display = {
+                        when (it) {
+                            ThemeMode.SYSTEM -> "follow system"
+                            ThemeMode.LIGHT -> "light"
+                            ThemeMode.DARK -> "dark"
+                        }
+                    },
+                    onSelect = {
+                        theme = it
+                        store.themeMode = it
+                        onThemeChanged(it)
                     },
                 )
             }
@@ -142,27 +182,55 @@ fun SettingsScreen(store: Store, onServiceChanged: (Boolean) -> Unit) {
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Polling", fontWeight = FontWeight.Bold)
+                Text("Delivery", fontWeight = FontWeight.Bold)
+                ToggleRow(
+                    label = "Foreground service (fast: 30s–5min)",
+                    checked = reliable,
+                    onCheckedChange = {
+                        reliable = it
+                        store.reliableDelivery = it
+                        onServiceChanged(true)   // re-apply the schedule
+                    },
+                )
+                if (!reliable) {
+                    Text(
+                        "Background mode: no notification, but Android's minimum is 15 minutes " +
+                            "between checks and Doze can delay it further.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
                 OutlinedTextField(
                     value = poll,
                     onValueChange = { v ->
                         poll = v.filter(Char::isDigit)
-                        poll.toIntOrNull()?.let { store.pollSeconds = it }
+                        poll.toIntOrNull()?.let {
+                            store.pollSeconds = it
+                            onServiceChanged(true)
+                        }
                     },
                     label = { Text("interval (seconds, 30–300)") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Text(
-                    "Default 60s. Below 30s hurts battery; the value is clamped to 30–300.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.labelSmall,
-                )
-                Text(
-                    "Recommended: 60s. Sub-minute precision is not needed.",
-                    style = MaterialTheme.typography.labelSmall,
-                )
+                if (reliable) {
+                    Text(
+                        "A foreground service must show a notification. Ours is silent and has no " +
+                            "status-bar icon — it only appears when you pull down the shade.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                    TextButton(onClick = {
+                        runCatching {
+                            context.startActivity(
+                                Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                                    .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                                    .putExtra(Settings.EXTRA_CHANNEL_ID, Notifications.CHANNEL_SERVICE),
+                            )
+                        }
+                    }) { Text("Hide its notification") }
+                }
             }
         }
 
@@ -178,6 +246,26 @@ fun SettingsScreen(store: Store, onServiceChanged: (Boolean) -> Unit) {
                 )
             }
         }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("About", fontWeight = FontWeight.Bold)
+                Text(
+                    "PagerAPP keeps nothing on a server and logs nothing. It only talks to the " +
+                        "PagerMCP server you set above.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+                TextButton(onClick = { showAbout = true }) { Text("About PagerAPP") }
+                TextButton(onClick = { uriHandler.openUri(AppLinks.PRIVACY_POLICY) }) {
+                    Text("Privacy policy")
+                }
+            }
+        }
+    }
+
+    if (showAbout) {
+        AboutDialog(store = store, onDismiss = { showAbout = false })
     }
 }
 

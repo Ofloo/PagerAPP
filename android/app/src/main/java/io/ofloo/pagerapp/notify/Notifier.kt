@@ -21,7 +21,12 @@ object Notifier {
 
     private const val TAG = "PagerAPP"
 
-    fun post(context: Context, page: Page, audible: Boolean) {
+    fun post(
+        context: Context,
+        page: Page,
+        audible: Boolean,
+        channel: String = Notifications.CHANNEL_PAGES,
+    ) {
         Notifications.ensureChannels(context)
 
         val tapIntent = PendingIntent.getActivity(
@@ -32,7 +37,7 @@ object Notifier {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 
-        val builder = NotificationCompat.Builder(context, Notifications.CHANNEL_PAGES)
+        val builder = NotificationCompat.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_launcher)
             .setContentTitle(Notifications.title(page))
             .setContentText(Notifications.text(page))
@@ -90,6 +95,7 @@ object Notifier {
             io.ofloo.pagerapp.net.PagerClient.notify(store.serverUrl, ack.targetUuid, ack.payload)
         }.onSuccess {
             Log.i(TAG, "ACK sent to ${ack.targetUuid} for page $pageId")
+            runCatching { store.markAcked(pageId) }
         }.onFailure {
             Log.e(TAG, "ACK failed for page $pageId", it)
         }

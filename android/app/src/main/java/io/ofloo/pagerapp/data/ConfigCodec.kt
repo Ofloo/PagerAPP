@@ -7,6 +7,7 @@ import io.ofloo.pagerapp.shared.StatusRule
 import io.ofloo.pagerapp.shared.TimeBound
 import io.ofloo.pagerapp.shared.VibrationPattern
 import io.ofloo.pagerapp.shared.WatchMode
+import io.ofloo.pagerapp.shared.defaultChatLevels
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalTime
@@ -27,9 +28,20 @@ object ConfigCodec {
         }
         val windows = JSONArray()
         config.activeWindows.forEach { windows.put("${it.start}-${it.end}") }
+        val levels = JSONObject()
+        config.chatLevels.forEach { (name, rule) ->
+            levels.put(
+                name,
+                JSONObject()
+                    .put("a", rule.action.name)
+                    .put("t", rule.timeBound.name)
+                    .put("v", rule.vibration.name),
+            )
+        }
         return JSONObject()
             .put("rules", rules)
             .put("windows", windows)
+            .put("levels", levels)
             .put("bypass", config.bypassMode)
             .put("silence", config.silenceMode)
             .put("watch", config.watchMode.name)
@@ -58,12 +70,24 @@ object ConfigCodec {
                     parseWindow(arr.optString(i))?.let { windows.add(it) }
                 }
             }
+            val levels = mutableMapOf<String, StatusRule>()
+            o.optJSONObject("levels")?.let { obj ->
+                obj.keys().forEach { key ->
+                    val r = obj.getJSONObject(key)
+                    levels[key] = StatusRule(
+                        action = enumOr(r.optString("a"), NotifyAction.SOUND_VIBRATE),
+                        timeBound = enumOr(r.optString("t"), TimeBound.ACTIVE_HOURS),
+                        vibration = enumOr(r.optString("v"), VibrationPattern.SHORT),
+                    )
+                }
+            }
             PagerConfig(
                 statusRules = rules,
                 activeWindows = windows.ifEmpty { PagerConfig().activeWindows },
                 bypassMode = o.optBoolean("bypass", false),
                 silenceMode = o.optBoolean("silence", false),
                 watchMode = enumOr(o.optString("watch"), WatchMode.OFF),
+                chatLevels = levels.ifEmpty { defaultChatLevels() },
             )
         } catch (_: Exception) {
             PagerConfig()

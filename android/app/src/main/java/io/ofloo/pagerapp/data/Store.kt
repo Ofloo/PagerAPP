@@ -2,6 +2,10 @@ package io.ofloo.pagerapp.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import io.ofloo.pagerapp.ThemeMode
+import io.ofloo.pagerapp.shared.Contact
+import io.ofloo.pagerapp.shared.ContactKind
+import io.ofloo.pagerapp.shared.LEVEL_NORMAL
 import io.ofloo.pagerapp.shared.Page
 import io.ofloo.pagerapp.shared.PagerConfig
 import org.json.JSONArray
@@ -25,6 +29,76 @@ class Store(context: Context) {
         get() = prefs.getString(KEY_UUID, null)
         set(v) = prefs.edit().putString(KEY_UUID, v).apply()
 
+    /** Display name this device announces when it sends a page to a contact. */
+    var displayName: String
+        get() = prefs.getString(KEY_NAME, "")!!
+        set(v) = prefs.edit().putString(KEY_NAME, v).apply()
+
+    /** Colour-scheme preference; defaults to following the OS. */
+    var themeMode: ThemeMode
+        get() = runCatching { ThemeMode.valueOf(prefs.getString(KEY_THEME, null)!!) }
+            .getOrDefault(ThemeMode.SYSTEM)
+        set(v) = prefs.edit().putString(KEY_THEME, v.name).apply()
+
+    /** A contact payload delivered by an NFC tap; the Contacts screen consumes it once. */
+    var pendingContact: String?
+        get() = prefs.getString(KEY_PENDING_CONTACT, null)
+        set(v) = prefs.edit().putString(KEY_PENDING_CONTACT, v).apply()
+
+    /** People this device can exchange pages with. */
+    fun contacts(): List<Contact> {
+        val raw = prefs.getString(KEY_CONTACTS, null) ?: return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.getJSONObject(i)
+                val uuid = o.optString("uuid")
+                val server = o.optString("server")
+                if (uuid.isBlank() || server.isBlank()) null
+                else Contact(
+                    name = o.optString("name"),
+                    serverUrl = server,
+                    uuid = uuid,
+                    senderId = o.optString("sender_id"),
+                    mySenderId = o.optString("my_sender_id"),
+                    publicKey = o.optString("public_key"),
+                    kind = runCatching { ContactKind.valueOf(o.optString("kind")) }
+                        .getOrDefault(ContactKind.PERSON),
+                    level = o.optString("level").takeIf { it.isNotBlank() } ?: LEVEL_NORMAL,
+                )
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    fun upsertContact(contact: Contact) {
+        val merged = (contacts().filterNot { it.id == contact.id } + contact)
+        saveContacts(merged)
+    }
+
+    fun removeContact(id: String) {
+        saveContacts(contacts().filterNot { it.id == id })
+    }
+
+    private fun saveContacts(list: List<Contact>) {
+        val arr = JSONArray()
+        list.forEach { c ->
+            arr.put(
+                JSONObject()
+                    .put("name", c.name)
+                    .put("server", c.serverUrl)
+                    .put("uuid", c.uuid)
+                    .put("sender_id", c.senderId)
+                    .put("my_sender_id", c.mySenderId)
+                    .put("public_key", c.publicKey)
+                    .put("kind", c.kind.name)
+                    .put("level", c.level),
+            )
+        }
+        prefs.edit().putString(KEY_CONTACTS, arr.toString()).apply()
+    }
+
     var pollSeconds: Int
         get() = prefs.getInt(KEY_POLL, DEFAULT_POLL_SECONDS)
         set(v) = prefs.edit().putInt(KEY_POLL, v.coerceIn(MIN_POLL, MAX_POLL)).apply()
@@ -36,6 +110,14 @@ class Store(context: Context) {
     var silenceMode: Boolean
         get() = prefs.getBoolean(KEY_SILENCE, false)
         set(v) = prefs.edit().putBoolean(KEY_SILENCE, v).apply()
+
+    /**
+     * True = foreground service (poll every 30s–5min, one low-importance notification).
+     * False = background work (no notification, Android's 15-minute floor).
+     */
+    var reliableDelivery: Boolean
+        get() = prefs.getBoolean(KEY_RELIABLE, false)
+        set(v) = prefs.edit().putBoolean(KEY_RELIABLE, v).apply()
 
     var config: PagerConfig
         get() = ConfigCodec.decode(prefs.getString(KEY_CONFIG, null))
@@ -54,6 +136,26 @@ class Store(context: Context) {
     fun effectiveConfig(): PagerConfig =
         config.copy(bypassMode = bypassMode, silenceMode = silenceMode)
 
+    /**
+     * Registers [onChange] to fire whenever any of [keys] change in this process (e.g. the poll
+     * service recording a page). Keep the returned listener and pass it to [unregisterListener];
+     * SharedPreferences holds listeners weakly.
+     */
+    fun registerListener(
+        keys: Set<String>,
+        onChange: () -> Unit,
+    ): SharedPreferences.OnSharedPreferenceChangeListener {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key in keys) onChange()
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        return listener
+    }
+
+    fun unregisterListener(listener: SharedPreferences.OnSharedPreferenceChangeListener) {
+        prefs.unregisterOnSharedPreferenceChangeListener(listener)
+    }
+
     fun history(): List<HistoryEntry> {
         val raw = prefs.getString(KEY_HISTORY, null) ?: return emptyList()
         return try {
@@ -71,6 +173,27 @@ class Store(context: Context) {
         prefs.edit().putString(KEY_HISTORY, arr.toString()).apply()
     }
 
+    /** Marks one history entry as acknowledged (does not touch the server). */
+    fun markAcked(id: String) {
+        rewriteHistory { if (it.id == id) it.copy(acked = true) else it }
+    }
+
+    /** Moves one history entry into (or out of) the archive. */
+    fun setArchived(id: String, archived: Boolean) {
+        rewriteHistory { if (it.id == id) it.copy(archived = archived) else it }
+    }
+
+    /** Removes one history entry for good. */
+    fun deleteEntry(id: String) {
+        rewriteHistory { if (it.id == id) null else it }
+    }
+
+    private fun rewriteHistory(transform: (HistoryEntry) -> HistoryEntry?) {
+        val arr = JSONArray()
+        history().mapNotNull(transform).forEach { arr.put(it.toJson()) }
+        prefs.edit().putString(KEY_HISTORY, arr.toString()).apply()
+    }
+
     companion object {
         const val DEFAULT_SERVER = "https://pager.ofloo.io"
         const val DEFAULT_POLL_SECONDS = 60
@@ -81,12 +204,23 @@ class Store(context: Context) {
 
         private const val KEY_SERVER = "server_url"
         private const val KEY_UUID = "pager_uuid"
+        private const val KEY_NAME = "display_name"
+        private const val KEY_THEME = "theme_mode"
+        private const val KEY_PENDING_CONTACT = "pending_contact"
+        private const val KEY_CONTACTS = "contacts"
         private const val KEY_POLL = "poll_seconds"
         private const val KEY_CONFIG = "config"
         private const val KEY_BYPASS = "bypass"
         private const val KEY_SILENCE = "silence"
+        private const val KEY_RELIABLE = "reliable_delivery"
         private const val KEY_SEEN = "seen_ids"
         private const val KEY_HISTORY = "history"
+
+        /** Preference keys whose change should refresh the Pages list. */
+        val HISTORY_KEYS = setOf(KEY_HISTORY, KEY_SEEN)
+
+        /** Preference keys whose change should refresh the Contacts list. */
+        val CONTACT_KEYS = setOf(KEY_CONTACTS)
     }
 }
 
@@ -100,6 +234,10 @@ data class HistoryEntry(
     val createdAt: Double,
     val ackUuid: String?,
     val delivered: Boolean,
+    val from: String? = null,
+    val fromName: String? = null,
+    val acked: Boolean = false,
+    val archived: Boolean = false,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("id", id)
@@ -110,6 +248,10 @@ data class HistoryEntry(
         .put("created_at", createdAt)
         .put("ack_uuid", ackUuid)
         .put("delivered", delivered)
+        .put("from", from)
+        .put("from_name", fromName)
+        .put("acked", acked)
+        .put("archived", archived)
 
     companion object {
         fun fromJson(o: JSONObject) = HistoryEntry(
@@ -121,6 +263,10 @@ data class HistoryEntry(
             createdAt = o.optDouble("created_at", 0.0),
             ackUuid = o.optString("ack_uuid").takeIf { it.isNotEmpty() && it != "null" },
             delivered = o.optBoolean("delivered", false),
+            from = o.optString("from").takeIf { it.isNotEmpty() && it != "null" },
+            fromName = o.optString("from_name").takeIf { it.isNotEmpty() && it != "null" },
+            acked = o.optBoolean("acked", false),
+            archived = o.optBoolean("archived", false),
         )
 
         fun from(page: Page, delivered: Boolean) = HistoryEntry(
@@ -129,9 +275,11 @@ data class HistoryEntry(
             jobId = page.jobId,
             project = page.project,
             message = page.message,
-            createdAt = Instant.now().epochSecond.toDouble(),
+            createdAt = if (page.createdAt > 0.0) page.createdAt else Instant.now().epochSecond.toDouble(),
             ackUuid = page.ackUuid,
             delivered = delivered,
+            from = page.from,
+            fromName = page.fromName,
         )
     }
 }
