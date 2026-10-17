@@ -16,12 +16,14 @@ object ContactQr {
     private const val PREFIX = "pagerapp://contact"
 
     fun encode(contact: Contact): String {
-        val parts = mutableListOf(
-            "u=${enc(contact.uuid)}",
-            "s=${enc(contact.serverUrl)}",
-        )
-        if (contact.name.isNotBlank()) parts += "n=${enc(contact.name)}"
-        if (contact.mySenderId.isNotBlank()) parts += "i=${enc(contact.mySenderId)}"
+        val parts = mutableListOf<String>()
+        // u1 is the inviter's own receiving mailbox ("write here to reach me"); u2 is the mailbox
+        // the inviter prepared for the scanner to receive on, so the scanner has to do nothing.
+        parts += "u1=" + enc(contact.receiveOn.ifBlank { contact.uuid })
+        if (contact.sendTo.isNotBlank()) parts += "u2=" + enc(contact.sendTo)
+        parts += "s=" + enc(contact.serverUrl)
+        if (contact.name.isNotBlank()) parts += "n=" + enc(contact.name)
+        if (contact.mySenderId.isNotBlank()) parts += "i=" + enc(contact.mySenderId)
         return "$PREFIX?${parts.joinToString("&")}"
     }
 
@@ -55,17 +57,34 @@ object ContactQr {
             if (i <= 0) null else dec(pair.substring(0, i)) to dec(pair.substring(i + 1))
         }.toMap()
 
-        val uuid = params["u"]?.trim().orEmpty()
-        if (uuid.isBlank()) return null
+        val u1 = (params["u1"] ?: params["u"])?.trim().orEmpty()
+        if (u1.isBlank()) return null
+        val u2 = params["u2"]?.trim().orEmpty()
         val server = params["s"]?.trim().takeUnless { it.isNullOrBlank() } ?: fallbackServer
         val name = params["n"]?.trim().takeUnless { it.isNullOrBlank() } ?: fallbackName.orEmpty()
-        return Contact(
-            name = name,
-            serverUrl = server,
-            uuid = uuid,
-            senderId = params["i"]?.trim().orEmpty(),
-            mySenderId = mySenderId,
-        )
+        val peerSender = params["i"]?.trim().orEmpty()
+
+        return if (u2.isNotBlank()) {
+            // Two-mailbox invite: we write to u1 and read on u2, which the inviter prepared for us.
+            Contact(
+                name = name,
+                serverUrl = server,
+                uuid = u1,
+                senderId = peerSender,
+                mySenderId = mySenderId,
+                sendTo = u1,
+                receiveOn = u2,
+            )
+        } else {
+            // Legacy invite: one shared mailbox both ways.
+            Contact(
+                name = name,
+                serverUrl = server,
+                uuid = u1,
+                senderId = peerSender,
+                mySenderId = mySenderId,
+            )
+        }
     }
 
     private fun enc(s: String): String = buildString {

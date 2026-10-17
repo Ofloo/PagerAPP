@@ -32,9 +32,9 @@ object Poller {
         val store = Store(context)
         val own = store.uuid ?: return
         pollMailbox(context, mailbox = own, serverUrl = store.serverUrl, contact = null)
-        // Each contact has their own channel mailbox; our private inbox is never one of these.
+        // Each contact has their own receiving mailbox; our private inbox is never one of these.
         store.contacts().forEach { contact ->
-            pollMailbox(context, mailbox = contact.uuid, serverUrl = contact.serverUrl, contact = contact)
+            pollMailbox(context, mailbox = contact.inbox, serverUrl = contact.serverUrl, contact = contact)
         }
     }
 

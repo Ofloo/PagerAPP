@@ -34,10 +34,25 @@ data class Contact(
     val kind: ContactKind = ContactKind.PERSON,
     /** Which of the configured chat levels this chat uses (see [PagerConfig.chatLevels]). */
     val level: String = LEVEL_NORMAL,
+    /**
+     * The peer's receiving mailbox: everything we send goes here. Empty on legacy contacts, which
+     * shared one mailbox both ways — [outbox] then falls back to [uuid].
+     */
+    val sendTo: String = "",
+    /**
+     * Our own receiving mailbox for this chat: the peer writes here and only we read it. Empty on
+     * legacy contacts; [inbox] then falls back to [uuid].
+     */
+    val receiveOn: String = "",
 ) {
+    /** Where to `POST /notify` for this chat. */
+    val outbox: String get() = sendTo.ifBlank { uuid }
+
+    /** Which mailbox to poll and ack; one reader per mailbox, so nobody acks our messages away. */
+    val inbox: String get() = receiveOn.ifBlank { uuid }
+
     /** Stable local key; also separates the same channel on different servers. */
     val id: String get() = "$serverUrl|$uuid"
-
     /** True until we know who is on the other end (we invited, they have not replied yet). */
     val awaitingReply: Boolean get() = senderId.isBlank()
 }

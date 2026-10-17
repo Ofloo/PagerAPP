@@ -272,6 +272,41 @@ class ContactQrTest {
     fun rejectsEmptyInput() {
         assertEquals(null, ContactQr.decode("   ", fallbackServer = server))
     }
+
+    @Test
+    fun twoMailboxInviteCarriesBothDirections() {
+        // Alice invites: she reads on alice-inbox and prepared bob-inbox for the scanner.
+        val inviter = Contact(
+            name = "Alice",
+            serverUrl = server,
+            uuid = "alice-inbox",
+            mySenderId = "alice-sid",
+            sendTo = "bob-inbox",
+            receiveOn = "alice-inbox",
+        )
+        val scanned = ContactQr.decode(
+            ContactQr.encode(inviter),
+            fallbackServer = "x",
+            mySenderId = "bob-sid",
+        )!!
+
+        assertEquals("alice-inbox", scanned.sendTo, "we write to the inviter's inbox")
+        assertEquals("bob-inbox", scanned.receiveOn, "we read on the mailbox she gave us")
+        assertEquals("alice-inbox", scanned.outbox)
+        assertEquals("bob-inbox", scanned.inbox)
+        assertEquals("alice-sid", scanned.senderId)
+        assertEquals("bob-sid", scanned.mySenderId)
+    }
+
+    @Test
+    fun legacyInviteStillSharesOneMailbox() {
+        val legacy = "pagerapp://contact?u=shared&s=https%3A%2F%2Fpager.ofloo.io&n=Bob&i=bob-sid"
+        val c = ContactQr.decode(legacy, fallbackServer = "x")!!
+
+        assertEquals("shared", c.outbox)
+        assertEquals("shared", c.inbox, "old chats keep the shared mailbox in both directions")
+        assertEquals("bob-sid", c.senderId)
+    }
 }
 
 class SendTest {

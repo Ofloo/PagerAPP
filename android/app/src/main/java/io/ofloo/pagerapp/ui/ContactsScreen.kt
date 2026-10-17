@@ -173,21 +173,25 @@ fun ContactsScreen(store: Store) {
                                 busy = true
                                 status = null
                                 scope.launch {
-                                    val channel = withContext(Dispatchers.IO) {
-                                        runCatching { PagerClient.createMailbox(store.serverUrl) }
-                                            .getOrNull()
+                                    // Two mailboxes per chat: one we read on, one prepared for them.
+                                    val pair = withContext(Dispatchers.IO) {
+                                        runCatching {
+                                            PagerClient.createMailbox(store.serverUrl) to
+                                                PagerClient.createMailbox(store.serverUrl)
+                                        }.getOrNull()
                                     }
-                                    if (channel == null) {
-                                        status = "Could not create a channel (server unreachable?)"
+                                    if (pair == null) {
+                                        status = "Could not create the mailboxes (server unreachable?)"
                                     } else {
-                                        // The QR offers a fresh channel plus our per-channel sender id;
-                                        // our private mailbox is never shared.
+                                        val (mine, theirs) = pair
                                         val invite = Contact(
                                             name = store.displayName,
                                             serverUrl = store.serverUrl,
-                                            uuid = channel,
+                                            uuid = mine,
                                             senderId = "",
                                             mySenderId = UUID.randomUUID().toString(),
+                                            sendTo = theirs,
+                                            receiveOn = mine,
                                         )
                                         store.upsertContact(invite)
                                         refresh()
@@ -351,7 +355,7 @@ fun ContactsScreen(store: Store) {
                     val ok = withContext(Dispatchers.IO) {
                         runCatching {
                             val payload = buildOutgoing(contact, store.displayName, text)
-                            PagerClient.notify(store.serverUrl, contact.uuid, payload)
+                            PagerClient.notify(store.serverUrl, contact.outbox, payload)
                             true
                         }.getOrDefault(false)
                     }
@@ -398,7 +402,7 @@ fun ContactsScreen(store: Store) {
                         runCatching {
                             PagerClient.notify(
                                 store.serverUrl,
-                                contact.uuid,
+                                contact.outbox,
                                 buildOutgoing(contact, store.displayName, text),
                             )
                             true

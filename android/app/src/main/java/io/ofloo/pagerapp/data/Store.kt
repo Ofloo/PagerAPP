@@ -65,6 +65,8 @@ class Store(context: Context) {
                     kind = runCatching { ContactKind.valueOf(o.optString("kind")) }
                         .getOrDefault(ContactKind.PERSON),
                     level = o.optString("level").takeIf { it.isNotBlank() } ?: LEVEL_NORMAL,
+                    sendTo = o.optString("send_to"),
+                    receiveOn = o.optString("receive_on"),
                 )
             }
         } catch (_: Exception) {
@@ -93,7 +95,9 @@ class Store(context: Context) {
                     .put("my_sender_id", c.mySenderId)
                     .put("public_key", c.publicKey)
                     .put("kind", c.kind.name)
-                    .put("level", c.level),
+                    .put("level", c.level)
+                    .put("send_to", c.sendTo)
+                    .put("receive_on", c.receiveOn),
             )
         }
         prefs.edit().putString(KEY_CONTACTS, arr.toString()).apply()
