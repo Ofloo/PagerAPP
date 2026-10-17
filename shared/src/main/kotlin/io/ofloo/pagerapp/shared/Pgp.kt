@@ -18,6 +18,7 @@ import org.bouncycastle.openpgp.PGPPublicKeyRingCollection
 import org.bouncycastle.openpgp.PGPSecretKey
 import org.bouncycastle.openpgp.PGPSecretKeyRing
 import org.bouncycastle.openpgp.PGPSignature
+import org.bouncycastle.openpgp.PGPSignatureGenerator
 import org.bouncycastle.openpgp.PGPSignatureSubpacketGenerator
 import org.bouncycastle.openpgp.PGPUtil
 import org.bouncycastle.openpgp.jcajce.JcaPGPObjectFactory
