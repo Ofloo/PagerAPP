@@ -6,6 +6,7 @@ import io.ofloo.pagerapp.ThemeMode
 import io.ofloo.pagerapp.shared.Contact
 import io.ofloo.pagerapp.shared.ContactKind
 import io.ofloo.pagerapp.shared.LEVEL_NORMAL
+import io.ofloo.pagerapp.shared.Pgp
 import io.ofloo.pagerapp.shared.Page
 import io.ofloo.pagerapp.shared.PagerConfig
 import org.json.JSONArray
@@ -44,6 +45,52 @@ class Store(context: Context) {
     var pendingContact: String?
         get() = prefs.getString(KEY_PENDING_CONTACT, null)
         set(v) = prefs.edit().putString(KEY_PENDING_CONTACT, v).apply()
+
+    // --- Our OpenPGP identity (chat encryption) ---
+
+    /** How long a newly generated key lives. Clamped to 6-12 months by [Pgp]. */
+    var keyExpiryMonths: Int
+        get() = prefs.getInt(KEY_EXP_MONTHS, Pgp.DEFAULT_EXPIRY_MONTHS)
+        set(v) = prefs.edit()
+            .putInt(KEY_EXP_MONTHS, v.coerceIn(Pgp.MIN_EXPIRY_MONTHS, Pgp.MAX_EXPIRY_MONTHS))
+            .apply()
+
+    val ownPublicKey: String get() = prefs.getString(KEY_PUB, "").orEmpty()
+    val ownSecretKey: String get() = prefs.getString(KEY_SEC, "").orEmpty()
+    val ownFingerprint: String get() = prefs.getString(KEY_FPR, "").orEmpty()
+    val ownKeyExpiresAt: Long get() = prefs.getLong(KEY_EXP, 0L)
+
+    /**
+     * Returns our key material, generating it on first use. Generating RSA keys takes a moment,
+     * so call this from a background thread.
+     */
+    fun ensureOwnKeys(): Pgp.KeyMaterial {
+        val existing = Pgp.KeyMaterial(
+            publicArmored = ownPublicKey,
+            secretArmored = ownSecretKey,
+            fingerprint = ownFingerprint,
+            expiresAtEpochSeconds = ownKeyExpiresAt,
+        )
+        return if (existing.publicArmored.isNotBlank() && existing.secretArmored.isNotBlank()) {
+            existing
+        } else {
+            generateKeys()
+        }
+    }
+
+    /** Replaces the key ring — used when the old one expires or the user asks for a new one. */
+    fun renewKeys(): Pgp.KeyMaterial = generateKeys()
+
+    private fun generateKeys(): Pgp.KeyMaterial {
+        val keys = Pgp.generate("PagerAPP <pagerapp>", keyExpiryMonths)
+        prefs.edit()
+            .putString(KEY_PUB, keys.publicArmored)
+            .putString(KEY_SEC, keys.secretArmored)
+            .putString(KEY_FPR, keys.fingerprint)
+            .putLong(KEY_EXP, keys.expiresAtEpochSeconds)
+            .apply()
+        return keys
+    }
 
     /** People this device can exchange pages with. */
     fun contacts(): List<Contact> {
@@ -211,6 +258,11 @@ class Store(context: Context) {
         private const val KEY_NAME = "display_name"
         private const val KEY_THEME = "theme_mode"
         private const val KEY_PENDING_CONTACT = "pending_contact"
+        private const val KEY_PUB = "pgp_public"
+        private const val KEY_SEC = "pgp_secret"
+        private const val KEY_FPR = "pgp_fingerprint"
+        private const val KEY_EXP = "pgp_expires_at"
+        private const val KEY_EXP_MONTHS = "pgp_expiry_months"
         private const val KEY_CONTACTS = "contacts"
         private const val KEY_POLL = "poll_seconds"
         private const val KEY_CONFIG = "config"

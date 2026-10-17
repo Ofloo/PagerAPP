@@ -25,8 +25,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,7 +44,14 @@ import io.ofloo.pagerapp.data.Store
 import io.ofloo.pagerapp.AppLinks
 import io.ofloo.pagerapp.ThemeMode
 import io.ofloo.pagerapp.notify.Notifications
+import io.ofloo.pagerapp.shared.Pgp
 import io.ofloo.pagerapp.shared.WatchMode
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun SettingsScreen(
@@ -60,6 +69,10 @@ fun SettingsScreen(
     var showAbout by remember { mutableStateOf(false) }
     var restore by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
+    var keyMonths by remember { mutableStateOf(store.keyExpiryMonths) }
+    var keyRevision by remember { mutableIntStateOf(0) }
+    var generating by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val uriHandler = LocalUriHandler.current
     val context = LocalContext.current
 
@@ -252,6 +265,64 @@ fun SettingsScreen(
                     label = { Text("PagerMCP base URL") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Encryption", fontWeight = FontWeight.Bold)
+                val fingerprint = remember(keyRevision, showAbout) { store.ownFingerprint }
+                if (fingerprint.isBlank()) {
+                    Text(
+                        "No key yet. Chats stay readable until a key is generated; system pages " +
+                            "are never encrypted.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                } else {
+                    Text(
+                        "your fingerprint",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                    Text(
+                        fingerprint.chunked(4).joinToString(" "),
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                    )
+                    val expires = store.ownKeyExpiresAt
+                    if (expires > 0) {
+                        Text(
+                            "expires ${SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(expires * 1000L))}",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                }
+                Picker(
+                    label = "key lifetime",
+                    value = keyMonths,
+                    options = (Pgp.MIN_EXPIRY_MONTHS..Pgp.MAX_EXPIRY_MONTHS).toList(),
+                    display = { "$it months" },
+                    onSelect = { keyMonths = it; store.keyExpiryMonths = it },
+                )
+                Button(
+                    enabled = !generating,
+                    onClick = {
+                        generating = true
+                        scope.launch {
+                            withContext(Dispatchers.IO) { runCatching { store.renewKeys() } }
+                            generating = false
+                            keyRevision++
+                        }
+                    },
+                ) { Text(if (generating) "Generating…" else if (fingerprint.isBlank()) "Generate key" else "Renew key") }
+                Text(
+                    "The public key travels with every message, so a new one reaches your " +
+                        "contacts automatically after a renewal.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelSmall,
                 )
             }
         }

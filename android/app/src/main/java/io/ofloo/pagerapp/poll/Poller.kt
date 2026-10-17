@@ -13,6 +13,8 @@ import io.ofloo.pagerapp.shared.Decision
 import io.ofloo.pagerapp.shared.Page
 import io.ofloo.pagerapp.shared.decide
 import io.ofloo.pagerapp.shared.decideForContact
+import io.ofloo.pagerapp.shared.publicKeyFrom
+import io.ofloo.pagerapp.shared.readableText
 import io.ofloo.pagerapp.shared.shouldAck
 import java.time.LocalTime
 
@@ -80,24 +82,41 @@ object Poller {
                 )
             }
 
+            // Learn the peer's key from any message that carries one, so replies go out encrypted.
+            if (contact != null) {
+                publicKeyFrom(page)?.let { learned ->
+                    if (learned != contact.publicKey) {
+                        store.upsertContact(contact.copy(publicKey = learned))
+                    }
+                }
+            }
+
+            // Decrypt the body when it is encrypted; never show ciphertext as if it were a message.
+            val clear = readableText(page, store.ownSecretKey.ifBlank { null })
+            val shown = when {
+                page.enc.isNullOrBlank() -> page
+                clear != null -> page.copy(message = clear)
+                else -> page.copy(message = "🔒 encrypted — no usable key")
+            }
+
             val isChat = contact != null && contact.kind == ContactKind.PERSON
             val decision: Decision = if (isChat) {
                 // The chat's own level decides; "always" ignores this app's active hours.
                 decideForContact(contact!!, config, now)
             } else {
-                decide(page, config, now)
+                decide(shown, config, now)
             }
             val deliver = decision.notify && !isMine   // never notify about our own sent message
             if (deliver) {
                 val audible = Notifications.audible(decision) && Notifications.phoneChannels(decision)
                 Notifier.post(
                     context,
-                    page,
+                    shown,
                     audible = audible,
                     channel = if (isChat) Notifications.CHANNEL_MESSAGES else Notifications.CHANNEL_PAGES,
                 )
             }
-            history += HistoryEntry.from(page, delivered = deliver)
+            history += HistoryEntry.from(shown, delivered = deliver)
         }
 
         store.rememberSeen(fresh.map { it.id })

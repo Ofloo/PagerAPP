@@ -353,7 +353,12 @@ fun ContactsScreen(store: Store, onOpenChat: (Contact) -> Unit) {
                 scope.launch {
                     val ok = withContext(Dispatchers.IO) {
                         runCatching {
-                            val payload = buildOutgoing(contact, store.displayName, text)
+                            val payload = buildOutgoing(
+                                contact,
+                                store.displayName,
+                                text,
+                                myPublicArmored = store.ensureOwnKeys().publicArmored,
+                            )
                             PagerClient.notify(store.serverUrl, contact.outbox, payload)
                             true
                         }.getOrDefault(false)

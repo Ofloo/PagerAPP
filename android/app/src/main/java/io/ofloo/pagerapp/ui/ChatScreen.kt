@@ -112,7 +112,13 @@ fun ChatScreen(contact: Contact, store: Store, onBack: () -> Unit) {
                     PagerClient.notify(
                         store.serverUrl,
                         contact.outbox,
-                        buildOutgoing(contact, store.displayName, body),
+                        buildOutgoing(
+                            contact,
+                            store.displayName,
+                            body,
+                            // Our key rides along so the peer can answer encrypted from the start.
+                            myPublicArmored = store.ensureOwnKeys().publicArmored,
+                        ),
                     )
                     true
                 }.getOrDefault(false)
