@@ -131,19 +131,19 @@ fun ChatScreen(contact: Contact, store: Store, onBack: () -> Unit) {
         text = ""
         failure = null
         scope.launch {
+            // Build the payload first so we can record what actually went out: if it carries an
+            // `enc` body it was encrypted, and our own bubble must not claim otherwise.
+            val payload = buildOutgoing(
+                contact,
+                store.displayName,
+                body,
+                // Our key rides along so the peer can answer encrypted from the start.
+                myPublicArmored = store.ensureOwnKeys().publicArmored,
+            )
+            val wasEncrypted = payload["enc"] != null
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    PagerClient.notify(
-                        store.serverUrl,
-                        contact.outbox,
-                        buildOutgoing(
-                            contact,
-                            store.displayName,
-                            body,
-                            // Our key rides along so the peer can answer encrypted from the start.
-                            myPublicArmored = store.ensureOwnKeys().publicArmored,
-                        ),
-                    )
+                    PagerClient.notify(store.serverUrl, contact.outbox, payload)
                     true
                 }
             }
@@ -162,7 +162,7 @@ fun ChatScreen(contact: Contact, store: Store, onBack: () -> Unit) {
                             from = contact.mySenderId,
                             fromName = store.displayName,
                             acked = true,
-                            encrypted = false,
+                            encrypted = wasEncrypted,
                         ),
                     ),
                 )
