@@ -235,7 +235,13 @@ fun ChatScreen(contact: Contact, store: Store, onBack: () -> Unit) {
                             Spacer(Modifier.height(2.dp))
                             Text(
                                 buildString {
-                                    if (entry.encrypted) append("🔒 ")
+                                    // Say what this message actually was, not what the chat could
+                                    // do: a plaintext message in a chat with a key is an anomaly.
+                                    if (entry.encrypted) {
+                                        append("🔒 ")
+                                    } else if (contact.publicKey.isNotBlank() && !entry.notice) {
+                                        append("⚠️ not encrypted · ")
+                                    }
                                     append(timeOf(entry.createdAt))
                                     if (mine) append("  ").append(if (entry.acked) "✓✓" else "✓")
                                 },
