@@ -6,6 +6,9 @@ import io.ofloo.pagerapp.data.Store
 import io.ofloo.pagerapp.poll.Poller
 import org.json.JSONObject
 import org.unifiedpush.android.connector.MessagingReceiver
+import org.unifiedpush.android.connector.data.FailedReason
+import org.unifiedpush.android.connector.data.PushEndpoint
+import org.unifiedpush.android.connector.data.PushMessage
 
 /**
  * Receives UnifiedPush events, so the device can be woken without the app running and without a
@@ -19,13 +22,13 @@ import org.unifiedpush.android.connector.MessagingReceiver
  */
 class PushReceiver : MessagingReceiver() {
 
-    override fun onNewEndpoint(context: Context, endpoint: String, instance: String) {
+    override fun onNewEndpoint(context: Context, endpoint: PushEndpoint, instance: String) {
         Log.i(TAG, "new distributor endpoint, registering it for the mailbox")
-        PushManager.subscribe(context, endpoint)
+        PushManager.subscribe(context, endpoint.url)
     }
 
-    override fun onMessage(context: Context, message: ByteArray, instance: String) {
-        val text = String(message, Charsets.UTF_8)
+    override fun onMessage(context: Context, message: PushMessage, instance: String) {
+        val text = String(message.content, Charsets.UTF_8)
         val trigger = runCatching { JSONObject(text) }.getOrNull()
         if (trigger == null) {
             Log.w(TAG, "unparseable push trigger: ${text.take(120)}")
@@ -45,8 +48,8 @@ class PushReceiver : MessagingReceiver() {
         }
     }
 
-    override fun onRegistrationFailed(context: Context, instance: String) {
-        Log.w(TAG, "distributor registration failed")
+    override fun onRegistrationFailed(context: Context, reason: FailedReason, instance: String) {
+        Log.w(TAG, "distributor registration failed: $reason")
     }
 
     override fun onUnregistered(context: Context, instance: String) {
