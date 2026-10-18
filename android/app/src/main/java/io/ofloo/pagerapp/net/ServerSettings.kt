@@ -13,6 +13,7 @@ import org.json.JSONObject
 data class ServerSettings(
     val version: String = "?",
     val build: String = "?",
+    val hostname: String = "?",
     val subscriptionsEnabled: Boolean = true,
     val channels: List<String> = listOf("unifiedpush", "http"),
     val leaseSeconds: Long = 30L * 86_400L,
@@ -41,6 +42,7 @@ data class ServerSettings(
             return ServerSettings(
                 version = json.optString("version", "?"),
                 build = json.optString("build", "?"),
+                hostname = json.optString("hostname", "?"),
                 subscriptionsEnabled = subs?.optBoolean("enabled", true) ?: true,
                 channels = subs?.optJSONArray("channels")?.let { arr ->
                     (0 until arr.length()).mapNotNull { arr.optString(it).takeIf(String::isNotBlank) }
