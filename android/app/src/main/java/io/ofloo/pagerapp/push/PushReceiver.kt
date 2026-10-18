@@ -5,8 +5,8 @@ import android.util.Log
 import io.ofloo.pagerapp.data.Store
 import io.ofloo.pagerapp.poll.Poller
 import org.json.JSONObject
+import org.unifiedpush.android.connector.FailedReason
 import org.unifiedpush.android.connector.MessagingReceiver
-import org.unifiedpush.android.connector.data.FailedReason
 import org.unifiedpush.android.connector.data.PushEndpoint
 import org.unifiedpush.android.connector.data.PushMessage
 
