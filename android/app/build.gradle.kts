@@ -23,8 +23,8 @@ android {
         applicationId = "io.ofloo.pagerapp"
         minSdk = 26
         targetSdk = 36
-        versionCode = 59
-        versionName = "0.1.59"
+        versionCode = 60
+        versionName = "0.1.60"
     }
 
     signingConfigs {
@@ -89,6 +89,7 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.2")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
     implementation("androidx.work:work-runtime-ktx:2.10.5")
+    implementation("org.unifiedpush.android:connector:3.3.5")
 
     val composeBom = platform("androidx.compose:compose-bom:2024.09.03")
     implementation(composeBom)

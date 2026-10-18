@@ -53,8 +53,9 @@ class Store(context: Context) {
 
     // --- Push subscription (per mailbox; for now the private one) ---
 
+    /** Push is on unless the user turns it off: nothing to remember, nothing to switch on. */
     var pushEnabled: Boolean
-        get() = prefs.getBoolean(KEY_PUSH_ENABLED, false)
+        get() = prefs.getBoolean(KEY_PUSH_ENABLED, true)
         set(v) = prefs.edit().putBoolean(KEY_PUSH_ENABLED, v).apply()
 
     /** Server-side subscription id, and the lease we must renew before it lapses. */

@@ -33,10 +33,20 @@ object Poller {
     /** Extend an existing key this many days before it lapses. */
     private const val KEY_RENEW_LEAD_DAYS = 30L
 
+    /** UnifiedPush instance name for this app; also used by the receiver. */
+    const val PUSH_INSTANCE = "io.ofloo.pagerapp"
+
     /** One polling pass over the private mailbox and every contact channel. */
     fun pollOnce(context: Context) {
         val store = Store(context)
         val own = store.uuid ?: return
+
+        // Keep push registered: the connector is idempotent, so this self-heals after a
+        // reinstall, a distributor change or a cleared subscription.
+        if (store.pushEnabled && store.uuid != null) {
+            runCatching { org.unifiedpush.android.connector.UnifiedPush.register(context, PUSH_INSTANCE) }
+                .onFailure { Log.w(TAG, "push register failed: ${it.message}") }
+        }
 
         // Keep our own key current without the user having to think about it: an existing key is
         // extended (same fingerprint) well before it lapses, so nothing has to be re-announced.
@@ -50,6 +60,18 @@ object Poller {
         store.contacts().forEach { contact ->
             pollMailbox(context, mailbox = contact.inbox, serverUrl = contact.serverUrl, contact = contact)
         }
+    }
+
+    /** Fetches one mailbox by id, resolving the contact it belongs to (used by push triggers). */
+    fun pollMailboxNow(context: Context, mailbox: String) {
+        val store = Store(context)
+        val contact = store.contacts().firstOrNull { it.inbox == mailbox }
+        pollMailbox(
+            context,
+            mailbox = mailbox,
+            serverUrl = contact?.serverUrl ?: store.serverUrl,
+            contact = contact,
+        )
     }
 
     /** Fetches one mailbox's queued pages and processes them. */
