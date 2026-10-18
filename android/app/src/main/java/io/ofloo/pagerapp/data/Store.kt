@@ -46,6 +46,38 @@ class Store(context: Context) {
         get() = prefs.getString(KEY_PENDING_CONTACT, null)
         set(v) = prefs.edit().putString(KEY_PENDING_CONTACT, v).apply()
 
+    /** Optional second PagerMCP base URL, used when the primary cannot be reached. */
+    var alternateServer: String
+        get() = prefs.getString(KEY_ALT_SERVER, "")!!
+        set(v) = prefs.edit().putString(KEY_ALT_SERVER, v).apply()
+
+    // --- Push subscription (per mailbox; for now the private one) ---
+
+    var pushEnabled: Boolean
+        get() = prefs.getBoolean(KEY_PUSH_ENABLED, false)
+        set(v) = prefs.edit().putBoolean(KEY_PUSH_ENABLED, v).apply()
+
+    /** Server-side subscription id, and the lease we must renew before it lapses. */
+    var pushId: String
+        get() = prefs.getString(KEY_PUSH_ID, "")!!
+        set(v) = prefs.edit().putString(KEY_PUSH_ID, v).apply()
+
+    var pushExpires: Long
+        get() = prefs.getLong(KEY_PUSH_EXPIRES, 0L)
+        set(v) = prefs.edit().putLong(KEY_PUSH_EXPIRES, v).apply()
+
+    /** The distributor endpoint we handed to the server, so we can re-register after a change. */
+    var pushEndpoint: String
+        get() = prefs.getString(KEY_PUSH_ENDPOINT, "")!!
+        set(v) = prefs.edit().putString(KEY_PUSH_ENDPOINT, v).apply()
+
+    /** Whole days until the push lease ends; a large number when none is registered. */
+    fun pushDaysLeft(): Long {
+        val expires = pushExpires
+        if (expires <= 0) return Long.MAX_VALUE
+        return (expires - System.currentTimeMillis() / 1000L) / 86_400L
+    }
+
     // --- Our OpenPGP identity (chat encryption) ---
 
     /** How long a newly generated key lives. Clamped to 6-12 months by [Pgp]. */
@@ -289,6 +321,11 @@ class Store(context: Context) {
         private const val KEY_FPR = "pgp_fingerprint"
         private const val KEY_EXP = "pgp_expires_at"
         private const val KEY_EXP_MONTHS = "pgp_expiry_months"
+        private const val KEY_ALT_SERVER = "alternate_server"
+        private const val KEY_PUSH_ENABLED = "push_enabled"
+        private const val KEY_PUSH_ID = "push_id"
+        private const val KEY_PUSH_EXPIRES = "push_expires"
+        private const val KEY_PUSH_ENDPOINT = "push_endpoint"
         private const val KEY_BITS = "pgp_bits"
 
         /** 8192 by request; generating that on a phone can take minutes, so it is changeable. */
