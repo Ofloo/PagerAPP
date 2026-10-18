@@ -273,6 +273,14 @@ fun ContactsScreen(store: Store, onOpenChat: (Contact) -> Unit) {
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    if (contact.receiveOn.isNotBlank() && contact.receiveOn != contact.uuid) {
+                        Text(
+                            "your address for this chat: ${contact.receiveOn}",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically,
