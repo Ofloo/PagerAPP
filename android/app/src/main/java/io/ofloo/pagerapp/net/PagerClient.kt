@@ -3,6 +3,7 @@ package io.ofloo.pagerapp.net
 import android.util.Log
 import io.ofloo.pagerapp.shared.Page
 import io.ofloo.pagerapp.shared.PageParser
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.net.HttpURLConnection
@@ -128,6 +129,59 @@ object PagerClient {
                     }
                 }
             }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /**
+     * Registers [endpoint] for [uuid] so the server can wake this device with a data-only trigger
+     * when a page arrives. The reply carries the subscription `id` and its lease `expires`; the
+     * client must renew before that, or push turns itself off.
+     */
+    fun subscribe(serverUrl: String, uuid: String, channel: String, endpoint: String): JSONObject {
+        val conn = open("$serverUrl/mailboxes/$uuid/subscriptions", "POST", uuid)
+        try {
+            val body = JSONObject().put("channel", channel).put("endpoint", endpoint)
+            conn.outputStream.use { it.write(body.toString().toByteArray()) }
+            require(conn.responseCode in 200..299) { "subscribe HTTP ${conn.responseCode}" }
+            return JSONObject(conn.inputStream.bufferedReader().use(BufferedReader::readText))
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** Renews a subscription before its lease ends. */
+    fun renewSubscription(serverUrl: String, uuid: String, id: String): JSONObject {
+        val conn = open("$serverUrl/mailboxes/$uuid/subscriptions", "POST", uuid)
+        try {
+            conn.outputStream.use { it.write(JSONObject().put("id", id).toString().toByteArray()) }
+            require(conn.responseCode in 200..299) { "renew HTTP ${conn.responseCode}" }
+            return JSONObject(conn.inputStream.bufferedReader().use(BufferedReader::readText))
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** Lists the mailbox's active subscriptions. */
+    fun subscriptions(serverUrl: String, uuid: String): JSONArray {
+        val conn = open("$serverUrl/mailboxes/$uuid/subscriptions", "GET", uuid)
+        try {
+            require(conn.responseCode in 200..299) { "subscriptions HTTP ${conn.responseCode}" }
+            val body = conn.inputStream.bufferedReader().use(BufferedReader::readText)
+            return JSONObject(body).optJSONArray("subscriptions") ?: JSONArray()
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** Removes one subscription, or every one of [channel] when [id] is null. */
+    fun unsubscribe(serverUrl: String, uuid: String, id: String? = null) {
+        val path = if (id == null) "$serverUrl/mailboxes/$uuid/subscriptions"
+        else "$serverUrl/mailboxes/$uuid/subscriptions/$id"
+        val conn = open(path, "DELETE", uuid)
+        try {
+            require(conn.responseCode in 200..299) { "unsubscribe HTTP ${conn.responseCode}" }
         } finally {
             conn.disconnect()
         }
