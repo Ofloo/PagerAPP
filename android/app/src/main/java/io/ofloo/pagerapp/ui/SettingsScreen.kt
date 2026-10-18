@@ -45,6 +45,8 @@ import io.ofloo.pagerapp.data.Store
 import io.ofloo.pagerapp.AppLinks
 import io.ofloo.pagerapp.ThemeMode
 import io.ofloo.pagerapp.notify.Notifications
+import io.ofloo.pagerapp.net.PagerClient
+import io.ofloo.pagerapp.net.ServerSettings
 import io.ofloo.pagerapp.shared.Pgp
 import io.ofloo.pagerapp.shared.WatchMode
 import kotlinx.coroutines.Dispatchers
@@ -70,6 +72,10 @@ fun SettingsScreen(
     var showAbout by remember { mutableStateOf(false) }
     var restore by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
+    var alternate by remember { mutableStateOf(store.alternateServer) }
+    var checking by remember { mutableStateOf(false) }
+    var found by remember { mutableStateOf<ServerSettings?>(null) }
+    var failure by remember { mutableStateOf<String?>(null) }
     var keyMonths by remember { mutableStateOf(store.keyExpiryMonths) }
     var keyBits by remember { mutableStateOf(store.keyBits) }
     var keyRevision by remember { mutableIntStateOf(0) }
@@ -260,19 +266,6 @@ fun SettingsScreen(
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Server", fontWeight = FontWeight.Bold)
-                OutlinedTextField(
-                    value = server,
-                    onValueChange = { server = it; store.serverUrl = it },
-                    label = { Text("PagerMCP base URL") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-        }
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Encryption", fontWeight = FontWeight.Bold)
                 val fingerprint = remember(keyRevision, showAbout) { store.ownFingerprint }
                 if (fingerprint.isBlank()) {
@@ -376,6 +369,59 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.labelSmall,
                 )
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Servers", fontWeight = FontWeight.Bold)
+                OutlinedTextField(
+                    value = server,
+                    onValueChange = { server = it; store.serverUrl = it },
+                    label = { Text("PagerMCP base URL") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = alternate,
+                    onValueChange = { alternate = it; store.alternateServer = it },
+                    label = { Text("alternate server (used when the first is unreachable)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Button(enabled = !checking, onClick = {
+                    checking = true
+                    scope.launch {
+                        val result = withContext(Dispatchers.IO) {
+                            runCatching { PagerClient.settings(store.serverUrl) }
+                        }
+                        checking = false
+                        found = result.getOrNull()
+                        failure = result.exceptionOrNull()?.let {
+                            "${it.javaClass.simpleName}: ${it.message}"
+                        }
+                    }
+                }) { Text(if (checking) "Checking…" else "Test server") }
+                found?.let { s ->
+                    Text(
+                        "${s.version} (build ${s.build}) on ${s.hostname}",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                    )
+                    Text(
+                        "push: ${if (s.subscriptionsEnabled) s.channels.joinToString(", ") else "off"}" +
+                            " · lease ${s.leaseSeconds / 86400}d · warn ${s.warnSeconds / 86400}d",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                    )
+                    Text(
+                        "sse: ${if (s.sseEnabled) "on, keepalive ${s.sseKeepaliveSeconds}s" else "off"}" +
+                            " · wait ${s.waitTimeoutSeconds}s",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                    )
+                }
+                failure?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
             }
         }
 

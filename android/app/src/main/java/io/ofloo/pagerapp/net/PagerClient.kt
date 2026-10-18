@@ -187,6 +187,18 @@ object PagerClient {
         }
     }
 
+    /** `GET /settings` — the server's effective, non-secret settings (PagerMCP 0.6.0+). */
+    fun settings(serverUrl: String): ServerSettings {
+        val conn = open("$serverUrl/settings", "GET", null)
+        try {
+            require(conn.responseCode in 200..299) { "settings HTTP ${conn.responseCode}" }
+            val body = conn.inputStream.bufferedReader().use(BufferedReader::readText)
+            return ServerSettings.parse(JSONObject(body))
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     private fun parsePage(json: String): Page =
         PageParser.parse(JSONObject(json).toMap())
 
