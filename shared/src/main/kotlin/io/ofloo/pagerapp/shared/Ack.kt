@@ -30,3 +30,20 @@ fun buildAck(page: Page, ownUuid: String, note: String? = null): AckRequest? {
     if (page.id.isNotBlank()) payload["in_reply_to"] = page.id
     return AckRequest(targetUuid = target, payload = payload)
 }
+
+/**
+ * Builds ProLOG's sender-managed ACK: a plain page to its reply mailbox containing
+ * `ack <token>`. ProLOG matches the token in `message` or `JOB_ID`; it does not look for a
+ * status-6 report, so this must not be sent as [buildAck].
+ */
+fun buildPrologAck(page: Page): AckRequest? {
+    val target = page.replyUuid?.takeIf { it.isNotBlank() } ?: return null
+    val token = page.ackToken?.takeIf { it.isNotBlank() } ?: return null
+    val payload = linkedMapOf<String, Any?>(
+        "PROJECT" to "PagerAPP",
+        "status" to 0,
+        "message" to "ack $token",
+        "JOB_ID" to "ack $token",
+    )
+    return AckRequest(targetUuid = target, payload = payload)
+}

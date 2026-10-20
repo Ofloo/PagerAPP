@@ -37,6 +37,16 @@ class PgpTest {
     }
 
     @Test
+    fun roundTripsBinaryDataAndFitsTheMessageLimit() {
+        val bob = Pgp.generate("Bob <pagerapp>")
+        val bytes = ByteArray(30_000) { (it * 31 % 256).toByte() }
+        val cipher = Pgp.encryptBytes(bytes, bob.publicArmored)
+        assertTrue(cipher.contains("BEGIN PGP MESSAGE"))
+        assertTrue(cipher.length < 60_000, "armored size=${cipher.length}")
+        assertTrue(Pgp.decryptBytes(cipher, bob.secretArmored).contentEquals(bytes))
+    }
+
+    @Test
     fun clampsTheExpiryIntoRange() {
         val short = Pgp.generate("x <pagerapp>", expiryMonths = 1)
         val long = Pgp.generate("x <pagerapp>", expiryMonths = 99)

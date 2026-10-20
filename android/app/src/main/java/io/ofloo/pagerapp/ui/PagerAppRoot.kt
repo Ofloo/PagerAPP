@@ -2,6 +2,7 @@ package io.ofloo.pagerapp.ui
 
 import android.os.Handler
 import android.os.Looper
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -12,12 +13,15 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Archive
@@ -62,12 +66,13 @@ import io.ofloo.pagerapp.ThemeMode
 import io.ofloo.pagerapp.data.HistoryEntry
 import io.ofloo.pagerapp.data.Store
 import io.ofloo.pagerapp.net.PagerClient
+import io.ofloo.pagerapp.notify.Notifier
 import io.ofloo.pagerapp.poll.Poller
 import io.ofloo.pagerapp.poll.PollService
 import io.ofloo.pagerapp.shared.Contact
 import io.ofloo.pagerapp.shared.ContactKind
-import io.ofloo.pagerapp.shared.Page
-import io.ofloo.pagerapp.shared.buildAck
+import io.ofloo.pagerapp.shared.FileLink
+import io.ofloo.pagerapp.shared.PhotoLink
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -78,13 +83,44 @@ import java.util.Locale
 private val TABS = listOf("Pages", "Contacts", "Rules", "Settings")
 
 @Composable
-fun PagerAppRoot(onServiceChanged: (Boolean) -> Unit, onThemeChanged: (ThemeMode) -> Unit) {
+fun PagerAppRoot(
+    onServiceChanged: (Boolean) -> Unit,
+    onThemeChanged: (ThemeMode) -> Unit,
+    pageTarget: PageTarget? = null,
+    onPageConsumed: () -> Unit = {},
+    shareTarget: SharePayload? = null,
+    onShareConsumed: () -> Unit = {},
+) {
     val context = LocalContext.current
     val store = remember { Store(context) }
     var uuid by remember { mutableStateOf(store.uuid) }
     var tab by remember { mutableIntStateOf(0) }
     var chat by remember { mutableStateOf<Contact?>(null) }
+    var focusPageId by remember { mutableStateOf<String?>(null) }
+    var chatShare by remember { mutableStateOf<SharePayload?>(null) }
+    var sharePicker by remember { mutableStateOf<SharePayload?>(null) }
     var setupError by remember { mutableStateOf<String?>(null) }
+
+    // A notification tap opens the chat it came from, or the page detail for a system page.
+    LaunchedEffect(pageTarget) {
+        val target = pageTarget ?: return@LaunchedEffect
+        val contact = store.contacts().firstOrNull {
+            it.kind == ContactKind.PERSON && it.senderId == target.from
+        }
+        if (contact != null) {
+            chat = contact
+        } else {
+            tab = 0
+            focusPageId = target.pageId
+        }
+        onPageConsumed()
+    }
+
+    // Content from Android's share sheet: ask which contact should receive it.
+    LaunchedEffect(shareTarget) {
+        val share = shareTarget ?: return@LaunchedEffect
+        sharePicker = share
+    }
 
     // The private mailbox exists once and is created silently on first launch; sharing happens
     // per contact, so there is nothing to "set up".
@@ -123,9 +159,61 @@ fun PagerAppRoot(onServiceChanged: (Boolean) -> Unit, onThemeChanged: (ThemeMode
         if (!store.silenceMode) onServiceChanged(true)
     }
 
+    // System back / gesture navigation: leave a secondary tab for Pages. Chat and its overlays
+    // register their own handlers; at the root this lets Android background the app normally.
+    BackHandler(enabled = tab != 0) { tab = 0 }
+
     // An open conversation takes the whole screen, above the tabs.
+    sharePicker?.let { share ->
+        val contacts = store.contacts()
+        AlertDialog(
+            onDismissRequest = {
+                sharePicker = null
+                onShareConsumed()
+            },
+            title = { Text("Share to…") },
+            text = {
+                if (contacts.isEmpty()) {
+                    Text("Add a contact first, then share again.")
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .heightIn(max = 360.dp)
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        contacts.forEach { contact ->
+                            TextButton(onClick = {
+                                sharePicker = null
+                                onShareConsumed()
+                                chatShare = share
+                                chat = contact
+                            }) {
+                                Text(contact.name.ifBlank { contact.uuid.take(8) })
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    sharePicker = null
+                    onShareConsumed()
+                }) { Text(if (contacts.isEmpty()) "Close" else "Cancel") }
+            },
+        )
+    }
+
     chat?.let { contact ->
-        ChatScreen(contact = contact, store = store, onBack = { chat = null })
+        ChatScreen(
+            contact = contact,
+            store = store,
+            onBack = {
+                chat = null
+                chatShare = null
+            },
+            initialShare = chatShare,
+            onShareConsumed = { chatShare = null },
+        )
         return
     }
 
@@ -144,7 +232,12 @@ fun PagerAppRoot(onServiceChanged: (Boolean) -> Unit, onThemeChanged: (ThemeMode
                 }
             }
             when (tab) {
-                0 -> PagesScreen(store, onOpenChat = { chat = it })
+                0 -> PagesScreen(
+                    store,
+                    onOpenChat = { chat = it },
+                    focusPageId = focusPageId,
+                    onFocusConsumed = { focusPageId = null },
+                )
                 1 -> ContactsScreen(store, onOpenChat = { chat = it })
                 2 -> RulesScreen(store)
                 else -> SettingsScreen(store, onServiceChanged, onThemeChanged)
@@ -157,13 +250,29 @@ enum class PageMode { CHATS, PAGES, ARCHIVED }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PagesScreen(store: Store, onOpenChat: (Contact) -> Unit) {
+private fun PagesScreen(
+    store: Store,
+    onOpenChat: (Contact) -> Unit,
+    focusPageId: String? = null,
+    onFocusConsumed: () -> Unit = {},
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var revision by remember { mutableIntStateOf(0) }
     var selected by remember { mutableStateOf<HistoryEntry?>(null) }
     var banner by remember { mutableStateOf<String?>(null) }
     var mode by remember { mutableStateOf(PageMode.CHATS) }
+
+    // A notification tap asked for one specific page: show it in the Pages feed detail.
+    LaunchedEffect(focusPageId) {
+        val id = focusPageId ?: return@LaunchedEffect
+        mode = PageMode.PAGES
+        store.history().firstOrNull { it.id == id }?.let { selected = it }
+        onFocusConsumed()
+    }
+
+    // Back from the Pages/Archived filter returns to Chats instead of exiting the app.
+    BackHandler(enabled = mode != PageMode.CHATS) { mode = PageMode.CHATS }
     var refreshing by remember { mutableStateOf(false) }
 
     // Refresh live while the poll service records pages in the background. Listeners fire on the
@@ -174,8 +283,19 @@ private fun PagesScreen(store: Store, onOpenChat: (Contact) -> Unit) {
         onDispose { store.unregisterListener(listener) }
     }
     val all = remember(revision) { store.history() }
+    // Every identity that belongs to a conversation: those entries live in Chats, not in the raw
+    // page feed — otherwise the feed fills up with chatter instead of the pages that need attention.
+    val chatSenders = remember(revision) {
+        store.contacts()
+            .flatMap { listOf(it.senderId, it.mySenderId) }
+            .filter { it.isNotBlank() }
+            .toSet()
+    }
     val visible = remember(revision, mode) {
-        all.filter { it.archived == (mode == PageMode.ARCHIVED) }
+        all.filter { entry ->
+            entry.archived == (mode == PageMode.ARCHIVED) &&
+                (mode == PageMode.ARCHIVED || entry.from == null || entry.from !in chatSenders)
+        }
     }
 
     /** Fetch right now — pull-to-refresh, and once when the screen opens. */
@@ -287,24 +407,24 @@ private fun PagesScreen(store: Store, onOpenChat: (Contact) -> Unit) {
                 scope.launch {
                     val ok = withContext(Dispatchers.IO) {
                         runCatching {
-                            val page = Page(
-                                id = entry.id,
-                                status = entry.status,
+                            Notifier.sendAck(
+                                context = context,
+                                pageId = entry.id,
                                 jobId = entry.jobId,
                                 ackUuid = entry.ackUuid,
+                                replyUuid = entry.replyUuid,
+                                ackToken = entry.ackToken,
+                                note = note,
+                                mailbox = entry.mailbox ?: store.uuid,
+                                serverUrl = entry.serverUrl ?: store.serverUrl,
                             )
-                            val ack = buildAck(page, store.uuid.orEmpty(), note)
-                                ?: return@runCatching false
-                            PagerClient.notify(store.serverUrl, ack.targetUuid, ack.payload)
-                            true
                         }.getOrDefault(false)
                     }
                     banner = if (ok) {
-                        store.markAcked(entry.id)
                         revision++
                         "Acknowledged ${entry.jobId ?: entry.id.take(8)}"
                     } else {
-                        "ACK failed — this page has no ack address, or the server is unreachable."
+                        "ACK failed — the server is unreachable, or this page has no ACK target."
                     }
                     selected = null
                 }
@@ -369,8 +489,15 @@ private fun ChatsList(store: Store, history: List<HistoryEntry>, onOpenChat: (Co
                                 if (row.contact.kind == ContactKind.SYSTEM) " · system" else "",
                             fontWeight = FontWeight.Bold,
                         )
+                        val preview = row.last.message?.let { message ->
+                            when {
+                                PhotoLink.parse(message) != null -> "Photo link"
+                                FileLink.parse(message) != null -> "Attachment"
+                                else -> message
+                            }
+                        } ?: "(no text)"
                         Text(
-                            row.last.message ?: "(no text)",
+                            preview,
                             fontSize = 13.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -394,6 +521,11 @@ private fun ChatsList(store: Store, history: List<HistoryEntry>, onOpenChat: (Co
         }
     }
 }
+
+private fun fullDateTime(epochSeconds: Double): String =
+    if (epochSeconds <= 0) "—"
+    else SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+        .format(Date((epochSeconds * 1000).toLong()))
 
 private fun shortTime(epochSeconds: Double): String {
     if (epochSeconds <= 0) return ""
@@ -422,16 +554,17 @@ private fun PageCard(entry: HistoryEntry, onClick: () -> Unit) {
                     entry.jobId ?: entry.project ?: "page",
                     fontWeight = FontWeight.Bold,
                 )
-                Text(statusLabel(entry.status), color = statusColor(entry.status))
+                Text(statusLabel(entry.status, entry.prio), color = statusColor(entry.status))
             }
             Spacer(Modifier.height(4.dp))
             Text(entry.message ?: "(no message)")
             Spacer(Modifier.height(4.dp))
             Text(
                 buildString {
+                    if (entry.createdAt > 0) append("${shortTime(entry.createdAt)} · ")
                     append("status ${entry.status}")
                     if (entry.acked) append(" · acknowledged")
-                    else if (!entry.ackUuid.isNullOrBlank()) append(" · tap to ACK")
+                    else if (entry.delivered) append(" · tap to ACK")
                     if (!entry.delivered) append(" · not notified")
                 },
                 fontSize = 12.sp,
@@ -487,15 +620,24 @@ private fun PageDetailDialog(
         title = { Text(entry.jobId ?: entry.project ?: "page") },
         text = {
             Column {
-                Text(statusLabel(entry.status), color = statusColor(entry.status), fontWeight = FontWeight.Bold)
+                Text(statusLabel(entry.status, entry.prio), color = statusColor(entry.status), fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
                 Text(entry.message ?: "(no message)")
                 Spacer(Modifier.height(10.dp))
                 KeyValue("status", entry.status.toString())
+                KeyValue("sent", fullDateTime(entry.createdAt))
+                KeyValue("received", entry.receivedAt?.let(::fullDateTime) ?: "—")
+                KeyValue("encrypted", if (entry.encrypted) {
+                    "yes" + (entry.keyBits?.let { " · $it bits" } ?: "")
+                } else {
+                    "no"
+                })
                 KeyValue("page id", entry.id)
                 entry.project?.let { KeyValue("project", it) }
+                entry.prio?.let { KeyValue("level", it) }
                 entry.fromName?.let { KeyValue("from", it) }
                 if (!entry.ackUuid.isNullOrBlank()) KeyValue("ack to", entry.ackUuid)
+                if (!entry.replyUuid.isNullOrBlank()) KeyValue("ack via ProLOG", entry.replyUuid)
                 if (entry.acked) {
                     Spacer(Modifier.height(8.dp))
                     Text("Already acknowledged", color = MaterialTheme.colorScheme.primary)
@@ -510,7 +652,7 @@ private fun PageDetailDialog(
             }
         },
         confirmButton = {
-            val canAck = !entry.ackUuid.isNullOrBlank() && !entry.acked
+            val canAck = entry.delivered && !entry.acked
             TextButton(enabled = canAck, onClick = { onAck(note) }) { Text("ACK") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
@@ -541,15 +683,24 @@ private fun EmptyHint(text: String) {
     }
 }
 
-private fun statusLabel(status: Int): String = when (status) {
-    0 -> "0 Success"
-    1 -> "1 Warning"
-    2 -> "2 Failed"
-    3 -> "3 Critical"
-    4 -> "4 In Progress"
-    5 -> "5 Queued"
-    6 -> "6 Acknowledged"
-    else -> status.toString()
+private fun statusLabel(status: Int, prio: String? = null): String {
+    val level = prio?.trim()?.lowercase()?.takeIf {
+        it in setOf("debug", "info", "warning", "alarm", "critical")
+    }
+    if (level != null) {
+        return "$status ${level.replaceFirstChar { it.uppercase() }}"
+    }
+    return when (status) {
+        0 -> "0 Success"
+        1 -> "1 Warning"
+        2 -> "2 Failed"
+        3 -> "3 Critical"
+        4 -> "4 In Progress"
+        5 -> "5 Queued"
+        6 -> "6 Acknowledged"
+        7 -> "7 Debug"
+        else -> status.toString()
+    }
 }
 
 @Composable

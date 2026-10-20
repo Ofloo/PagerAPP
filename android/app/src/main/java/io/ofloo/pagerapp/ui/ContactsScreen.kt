@@ -3,6 +3,7 @@ package io.ofloo.pagerapp.ui
 import android.os.Handler
 import android.os.Looper
 import androidx.compose.foundation.Image
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -39,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.ofloo.pagerapp.data.HistoryEntry
 import io.ofloo.pagerapp.data.Store
+import io.ofloo.pagerapp.push.PushManager
 import io.ofloo.pagerapp.net.PagerClient
 import io.ofloo.pagerapp.shared.Contact
 import io.ofloo.pagerapp.shared.ContactKind
@@ -81,6 +83,12 @@ fun ContactsScreen(store: Store, onOpenChat: (Contact) -> Unit) {
     // Leave reader mode when the screen goes away.
     DisposableEffect(activity) {
         onDispose { activity?.let { NfcShare.stopReader(it) } }
+    }
+
+    // Back cancels an active NFC read/write instead of leaving the tab or the app.
+    BackHandler(enabled = nfcMode != NfcMode.NONE) {
+        activity?.let { NfcShare.stopReader(it) }
+        nfcMode = NfcMode.NONE
     }
 
     /** Adds a contact from a QR or NFC payload. */
@@ -318,7 +326,12 @@ fun ContactsScreen(store: Store, onOpenChat: (Contact) -> Unit) {
                             Button(onClick = { sendTo = contact }) { Text("Send") }
                         }
                         TextButton(onClick = { renameTarget = contact }) { Text("Rename") }
-                        TextButton(onClick = { store.removeContact(contact.id); refresh() }) {
+                        TextButton(onClick = {
+                            val app = context.applicationContext
+                            Thread({ PushManager.removeFcmTarget(app, contact.serverUrl, contact.inbox) }, "pagerapp-fcm-remove").start()
+                            store.removeContact(contact.id)
+                            refresh()
+                        }) {
                             Text("Delete")
                         }
                     }

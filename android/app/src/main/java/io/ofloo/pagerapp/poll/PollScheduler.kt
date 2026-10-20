@@ -24,6 +24,14 @@ object PollScheduler {
 
     /** (Re)configures polling from the current settings. Safe to call on every app start. */
     fun apply(context: Context, store: Store) {
+        if (store.alarmPolling) {
+            // Wake-yourself-up mode: no service, no background work — just an alarm that fetches.
+            WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
+            PollService.stop(context)
+            AlarmPoll.arm(context, store.pollSeconds)
+            return
+        }
+        AlarmPoll.disarm(context)
         if (store.reliableDelivery) {
             WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
             PollService.start(context)
@@ -44,5 +52,6 @@ object PollScheduler {
     fun stop(context: Context) {
         WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
         PollService.stop(context)
+        AlarmPoll.disarm(context)
     }
 }

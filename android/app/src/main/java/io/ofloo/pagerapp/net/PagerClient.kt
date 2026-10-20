@@ -12,6 +12,8 @@ import java.net.URL
 /** What `GET /version` reports: the running server's version, build and hostname. */
 data class ServerInfo(val version: String, val build: String, val hostname: String)
 
+class SubscriptionNotFoundException : IllegalStateException("subscription not found")
+
 /** Thin PagerMCP HTTP client. The server is a dumb relay; this only speaks the RFC endpoints. */
 object PagerClient {
 
@@ -135,14 +137,26 @@ object PagerClient {
     }
 
     /**
-     * Registers [endpoint] for [uuid] so the server can wake this device with a data-only trigger
-     * when a page arrives. The reply carries the subscription `id` and its lease `expires`; the
-     * client must renew before that, or push turns itself off.
+     * Registers a wake-up route for [uuid] so the server can tell this device a page arrived,
+     * without content. Either a generic [endpoint] (a UnifiedPush distributor URL, channel
+     * `unifiedpush`/`http`) or — when the server itself is configured with an ntfy server — just a
+     * [topic] on that server (`{"channel":"ntfy","topic":"…"}`). The reply carries the subscription
+     * `id` and its lease `expires`; the client must renew before that, or push turns itself off.
      */
-    fun subscribe(serverUrl: String, uuid: String, channel: String, endpoint: String): JSONObject {
+    fun subscribe(
+        serverUrl: String,
+        uuid: String,
+        channel: String,
+        endpoint: String? = null,
+        topic: String? = null,
+        token: String? = null,
+    ): JSONObject {
         val conn = open("$serverUrl/mailboxes/$uuid/subscriptions", "POST", uuid)
         try {
-            val body = JSONObject().put("channel", channel).put("endpoint", endpoint)
+            val body = JSONObject().put("channel", channel)
+            if (endpoint != null) body.put("endpoint", endpoint)
+            if (topic != null) body.put("topic", topic)
+            if (token != null) body.put("token", token)
             conn.outputStream.use { it.write(body.toString().toByteArray()) }
             require(conn.responseCode in 200..299) { "subscribe HTTP ${conn.responseCode}" }
             return JSONObject(conn.inputStream.bufferedReader().use(BufferedReader::readText))
@@ -156,7 +170,29 @@ object PagerClient {
         val conn = open("$serverUrl/mailboxes/$uuid/subscriptions", "POST", uuid)
         try {
             conn.outputStream.use { it.write(JSONObject().put("id", id).toString().toByteArray()) }
-            require(conn.responseCode in 200..299) { "renew HTTP ${conn.responseCode}" }
+            val code = conn.responseCode
+            if (code == HttpURLConnection.HTTP_NOT_FOUND) throw SubscriptionNotFoundException()
+            require(code in 200..299) { "renew HTTP $code" }
+            return JSONObject(conn.inputStream.bufferedReader().use(BufferedReader::readText))
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    fun renewFcmSubscription(
+        serverUrl: String,
+        uuid: String,
+        id: String,
+        token: String,
+    ): JSONObject {
+        val conn = open("$serverUrl/mailboxes/$uuid/subscriptions", "POST", uuid)
+        try {
+            conn.outputStream.use {
+                it.write(JSONObject().put("id", id).put("token", token).toString().toByteArray())
+            }
+            val code = conn.responseCode
+            if (code == HttpURLConnection.HTTP_NOT_FOUND) throw SubscriptionNotFoundException()
+            require(code in 200..299) { "renew HTTP $code" }
             return JSONObject(conn.inputStream.bufferedReader().use(BufferedReader::readText))
         } finally {
             conn.disconnect()
@@ -182,6 +218,31 @@ object PagerClient {
         val conn = open(path, "DELETE", uuid)
         try {
             require(conn.responseCode in 200..299) { "unsubscribe HTTP ${conn.responseCode}" }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** `GET /mailboxes/{uuid}/status` — queued count, push state and retention, without secrets. */
+    fun mailboxStatus(serverUrl: String, uuid: String): MailboxStatus {
+        val conn = open("$serverUrl/mailboxes/$uuid/status", "GET", uuid)
+        try {
+            require(conn.responseCode in 200..299) { "status HTTP ${conn.responseCode}" }
+            val body = JSONObject(conn.inputStream.bufferedReader().use(BufferedReader::readText))
+            val push = body.optJSONObject("push")
+            val retention = body.optJSONObject("retention")
+            val channels = push?.optJSONArray("channels")?.let { arr ->
+                (0 until arr.length()).mapNotNull { arr.optString(it).takeIf(String::isNotBlank) }
+            } ?: emptyList()
+            return MailboxStatus(
+                messages = body.optInt("messages"),
+                pushEnabled = push?.optBoolean("enabled") ?: false,
+                subscriptions = push?.optInt("subscriptions") ?: 0,
+                channels = channels,
+                nextExpiry = (push?.opt("next_expiry") as? Number)?.toLong(),
+                messageTtlSeconds = (retention?.opt("message_ttl_seconds") as? Number)?.toLong() ?: 0L,
+                mailboxTtlSeconds = (retention?.opt("mailbox_ttl_seconds") as? Number)?.toLong() ?: 0L,
+            )
         } finally {
             conn.disconnect()
         }

@@ -8,6 +8,7 @@ import io.ofloo.pagerapp.shared.TimeBound
 import io.ofloo.pagerapp.shared.VibrationPattern
 import io.ofloo.pagerapp.shared.WatchMode
 import io.ofloo.pagerapp.shared.defaultChatLevels
+import io.ofloo.pagerapp.shared.sanitizeLevelOrder
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalTime
@@ -23,7 +24,11 @@ object ConfigCodec {
                 JSONObject()
                     .put("a", rule.action.name)
                     .put("t", rule.timeBound.name)
-                    .put("v", rule.vibration.name),
+                    .put("v", rule.vibration.name)
+                    .put("g", rule.followsGeneralSchedule)
+                    .put("w", windowArray(rule.customWindows))
+                    .put("s", rule.soundUri ?: "")
+                    .put("r", rule.repeat),
             )
         }
         val windows = JSONArray()
@@ -35,12 +40,19 @@ object ConfigCodec {
                 JSONObject()
                     .put("a", rule.action.name)
                     .put("t", rule.timeBound.name)
-                    .put("v", rule.vibration.name),
+                    .put("v", rule.vibration.name)
+                    .put("g", rule.followsGeneralSchedule)
+                    .put("w", windowArray(rule.customWindows))
+                    .put("s", rule.soundUri ?: "")
+                    .put("r", rule.repeat),
             )
         }
+        val order = JSONArray()
+        config.levelOrder.forEach { order.put(it) }
         return JSONObject()
             .put("rules", rules)
             .put("windows", windows)
+            .put("order", order)
             .put("levels", levels)
             .put("bypass", config.bypassMode)
             .put("silence", config.silenceMode)
@@ -61,6 +73,10 @@ object ConfigCodec {
                         action = enumOr(r.optString("a"), NotifyAction.SILENT),
                         timeBound = enumOr(r.optString("t"), TimeBound.NEVER),
                         vibration = enumOr(r.optString("v"), VibrationPattern.SHORT),
+                        followsGeneralSchedule = r.optBoolean("g", true),
+                        customWindows = parseWindows(r.optJSONArray("w")),
+                        soundUri = r.optString("s").takeIf { it.isNotBlank() },
+                        repeat = r.optBoolean("r", false),
                     )
                 }
             }
@@ -78,12 +94,23 @@ object ConfigCodec {
                         action = enumOr(r.optString("a"), NotifyAction.SOUND_VIBRATE),
                         timeBound = enumOr(r.optString("t"), TimeBound.ACTIVE_HOURS),
                         vibration = enumOr(r.optString("v"), VibrationPattern.SHORT),
+                        followsGeneralSchedule = r.optBoolean("g", true),
+                        customWindows = parseWindows(r.optJSONArray("w")),
+                        soundUri = r.optString("s").takeIf { it.isNotBlank() },
+                        repeat = r.optBoolean("r", false),
                     )
+                }
+            }
+            val order = mutableListOf<String>()
+            o.optJSONArray("order")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    arr.optString(i).takeIf { it.isNotBlank() }?.let { order.add(it) }
                 }
             }
             PagerConfig(
                 statusRules = rules,
                 activeWindows = windows.ifEmpty { PagerConfig().activeWindows },
+                levelOrder = sanitizeLevelOrder(order),
                 bypassMode = o.optBoolean("bypass", false),
                 silenceMode = o.optBoolean("silence", false),
                 watchMode = enumOr(o.optString("watch"), WatchMode.OFF),
@@ -92,6 +119,17 @@ object ConfigCodec {
         } catch (_: Exception) {
             PagerConfig()
         }
+    }
+
+    private fun windowArray(windows: List<ActiveWindow>): JSONArray {
+        val arr = JSONArray()
+        windows.forEach { arr.put("${it.start}-${it.end}") }
+        return arr
+    }
+
+    private fun parseWindows(arr: JSONArray?): List<ActiveWindow> {
+        if (arr == null) return emptyList()
+        return (0 until arr.length()).mapNotNull { parseWindow(arr.optString(it)) }
     }
 
     private fun parseWindow(s: String): ActiveWindow? {

@@ -12,7 +12,9 @@ import java.time.LocalTime
  * 3. Otherwise the status rule's time bound decides (NEVER / ALWAYS / ACTIVE_HOURS).
  */
 fun decide(page: Page, config: PagerConfig, now: LocalTime, rule: StatusRule? = null): Decision {
-    val effective = rule ?: config.statusRules[page.status] ?: defaultRuleFor(page.status)
+    // A recognised urgency level overrides the outcome status for notification purposes.
+    val status = statusForUrgency(page.prio) ?: page.status
+    val effective = rule ?: config.statusRules[status] ?: defaultRuleFor(status)
 
     if (config.silenceMode) {
         return Decision(
@@ -21,13 +23,15 @@ fun decide(page: Page, config: PagerConfig, now: LocalTime, rule: StatusRule? = 
             channels = emptySet(),
             vibration = effective.vibration,
             reason = "silence mode",
+            sound = effective.soundUri,
+            repeat = effective.repeat,
         )
     }
 
     val withinTimeBound = when (effective.timeBound) {
         TimeBound.NEVER -> false
         TimeBound.ALWAYS -> true
-        TimeBound.ACTIVE_HOURS -> config.activeWindows.any { it.contains(now) }
+        TimeBound.ACTIVE_HOURS -> effective.effectiveWindows(config).any { it.contains(now) }
     }
     val show = config.bypassMode || withinTimeBound
 
@@ -44,6 +48,8 @@ fun decide(page: Page, config: PagerConfig, now: LocalTime, rule: StatusRule? = 
             channels = emptySet(),
             vibration = effective.vibration,
             reason = reason,
+            sound = effective.soundUri,
+            repeat = effective.repeat,
         )
     }
 
@@ -58,6 +64,8 @@ fun decide(page: Page, config: PagerConfig, now: LocalTime, rule: StatusRule? = 
         channels = channels,
         vibration = effective.vibration,
         reason = reason,
+        sound = effective.soundUri,
+        repeat = effective.repeat,
     )
 }
 

@@ -22,13 +22,28 @@ enum class VibrationPattern { SHORT, LONG, REPEATED }
  *
  * @param action sound/vibration behaviour when the page is delivered.
  * @param timeBound time window in which the page may be delivered.
- * @param vibration watch vibration pattern (ignored when [WatchMode.OFF]).
+ * @param vibration vibration pattern (watch; the phone uses the action's default pattern).
+ * @param followsGeneralSchedule when [timeBound] is [TimeBound.ACTIVE_HOURS], use the config's
+ *   general [PagerConfig.activeWindows] instead of [customWindows].
+ * @param customWindows the level's own windows when [followsGeneralSchedule] is false. Empty
+ *   means "no custom schedule yet" and falls back to the general windows rather than muting it.
  */
 data class StatusRule(
     val action: NotifyAction,
     val timeBound: TimeBound,
     val vibration: VibrationPattern = VibrationPattern.SHORT,
-)
+    val followsGeneralSchedule: Boolean = true,
+    val customWindows: List<ActiveWindow> = emptyList(),
+    /** `null` = system default, `"none"` = no sound, otherwise a ringtone content URI. */
+    val soundUri: String? = null,
+    /** Repeat the alert (sound/vibration) until the page is acknowledged. */
+    val repeat: Boolean = false,
+) {
+    /** The windows actually used when [timeBound] is [TimeBound.ACTIVE_HOURS]. */
+    fun effectiveWindows(config: PagerConfig): List<ActiveWindow> =
+        if (followsGeneralSchedule) config.activeWindows
+        else customWindows.ifEmpty { config.activeWindows }
+}
 
 /**
  * An active-hours window in device local time. A window whose [end] is not after
@@ -50,6 +65,12 @@ data class PagerConfig(
     val silenceMode: Boolean = false,
     val watchMode: WatchMode = WatchMode.OFF,
     /**
+     * The order of the five level cards in the UI, top first. The user can move a level up or
+     * down; it is a ranking/display preference, not a second set of rules. Each level's actual
+     * behaviour is in [statusRules] (via its mapped status).
+     */
+    val levelOrder: List<String> = defaultLevelOrder(),
+    /**
      * Named notification levels offered per chat, e.g. "Important" = always reachable,
      * "Normal" = active hours, "Silent" = list only. A [Contact] stores the name it uses, so
      * retuning a level changes it for everyone on that level.
@@ -59,8 +80,9 @@ data class PagerConfig(
 
 /**
  * A PagerMCP page. The payload is opaque JSON; these are the fields PagerAPP reads.
- * [logs] and [prio] are not used by the decision logic but are kept for the UI.
- * [ackUuid], when present, is the mailbox an ACK may be sent back to.
+ * [prio] is the urgency level (`debug` < `info` < `warning` < `alarm` < `critical`); the parser
+ * folds it onto [status] so the existing per-status rules apply. It is kept for display too.
+ * [ackUuid] is the native ACK mailbox; [replyUuid]/[ackToken] are ProLOG's sender-managed ACK.
  * [from]/[fromName] identify the sender when the page came from a known [Contact].
  */
 data class Page(
@@ -72,6 +94,18 @@ data class Page(
     val logs: String? = null,
     val prio: String? = null,
     val ackUuid: String? = null,
+    /** ProLOG ACK: the reply mailbox the `ack <token>` message must be sent to. */
+    val replyUuid: String? = null,
+    /** ProLOG ACK: the token that identifies the pending page. */
+    val ackToken: String? = null,
+    /** Chunked chat photo: shared id, 1-based part and total number of parts. */
+    val imageId: String? = null,
+    val imagePart: Int? = null,
+    val imageTotal: Int? = null,
+    /** One slice of the armored PGP image; the slices are concatenated in part order. */
+    val imageChunk: String? = null,
+    /** SHA-256 of the complete armored image, so a reassembly is verified before decryption. */
+    val imageSha256: String? = null,
     val from: String? = null,
     val fromName: String? = null,
     /** The sender's armored OpenPGP public key, attached to every outgoing message. */
@@ -85,8 +119,11 @@ data class Page(
     /** Server `created_at` in Unix seconds; 0 when absent. Used only for ordering. */
     val createdAt: Double = 0.0,
 ) {
-    /** ACK is opt-in per page: available only when the page carries an [ackUuid]. */
+    /** Native ACK: available only when the page carries an [ackUuid]. */
     val ackAvailable: Boolean get() = !ackUuid.isNullOrBlank()
+
+    /** ProLOG ACK: available when the page named a reply mailbox and a token. */
+    val prologAckAvailable: Boolean get() = !replyUuid.isNullOrBlank() && !ackToken.isNullOrBlank()
 }
 
 /** The outcome of applying [decide]. */
@@ -96,4 +133,8 @@ data class Decision(
     val channels: Set<Channel>,
     val vibration: VibrationPattern,
     val reason: String,
+    /** Chosen notification sound: null = default, "none" = silent, else a URI. */
+    val sound: String? = null,
+    /** Repeat the alert until the page is acknowledged. */
+    val repeat: Boolean = false,
 )

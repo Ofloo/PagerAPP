@@ -7,6 +7,10 @@ other applications can produce and consume the same pages, contacts and acknowle
 interoperate. PagerMCP itself is an unmodified, opaque relay and is described only as far as a
 client needs it.
 
+Page semantics — the level table and the exact fields that request an acknowledgement versus a
+plain page — are defined in [RFC-PagerAPP-0002](rfc-pages.md), which is authoritative for §3 and §6
+below.
+
 ---
 
 ## 1. Transport (PagerMCP recap)
@@ -57,7 +61,7 @@ object.
 | `JOB_ID` | string | no | Correlates a start and finish page for one job |
 | `message` | string | no | Human-readable summary |
 | `logs` | string | no | Free text (e.g. tail of a build log) |
-| `prio` | string | no | Sender priority hint (not used by the decision logic) |
+| `prio` | string | no | Urgency level (`debug`, `info`, `warning`, `alarm`, `critical`); see RFC-0002 §4.2 |
 | `ack_uuid` | string (UUID) | no | Mailbox an acknowledgement may be sent to (§6) |
 | `from` | string | no | Sender's **per-channel** id (contact messaging, §5) — never a mailbox UUID |
 | `from_name` | string | no | Sender's display name |
@@ -72,7 +76,10 @@ Clients MUST surface `age_seconds`/`created_at`; an old queued page is not a fre
 
 ## 3. Status model
 
-Statuses are **numeric** by design (scriptable, user-defined ranges). Defaults:
+Statuses are **numeric** by design (scriptable, user-defined ranges). An optional `prio` field
+carries the five-level urgency ladder used by ProLOG (`debug < info < warning < alarm < critical`)
+and takes precedence for the notification decision; the table below is the fallback when it is
+absent. See [RFC-PagerAPP-0002 §4](rfc-pages.md) for the full model. Defaults:
 
 | Status | Meaning | Default action | Default time bound |
 |---|---|---|---|
@@ -83,7 +90,12 @@ Statuses are **numeric** by design (scriptable, user-defined ranges). Defaults:
 | `4` | In Progress | silent | never notify |
 | `5` | Queued | silent | never notify |
 | `6` | Acknowledged | silent | never notify |
-| `7`–`99` | custom | user-defined | user-defined |
+| `7`–`9` | custom | silent | never notify |
+| `10` | Chat message (reserved) | sound + vibrate | active hours |
+| `11`–`99` | custom | silent | never notify |
+
+A page on an unconfigured custom level is still recorded and shown in history. See
+[RFC-PagerAPP-0002 §4](rfc-pages.md) for the full level and decision rules.
 
 ### 3.1 Textual statuses (interoperability)
 
@@ -222,9 +234,9 @@ A contact is one of two things, and the kind decides how the client behaves:
 - **PERSON** — a chat. Opening it shows the conversation; reading *is* the acknowledgement, so a
   person chat has **no manual ACK button** (the client acks inbound channel pages as it fetches
   them, and marks them read). Read receipts (§7) apply.
-- **SYSTEM** — an alarm source. Messages stay in the notification list and always offer a
-  **manual ACK** (with an optional note) whenever the page carries an `ack_uuid`, so the operator
-  knows it was really seen.
+- **SYSTEM** — an alarm source. Messages stay in the notification list and offer a **manual ACK**
+  (with an optional note): it removes the page from the queue and, when the page carries an
+  `ack_uuid`, reports the acknowledgement back so the operator knows it was really seen.
 
 ### 5.5 Chat levels
 
@@ -246,8 +258,20 @@ mode or Do Not Disturb; clients MUST NOT bypass those.
 
 ## 6. Acknowledgement
 
-An ACK is an ordinary `POST /notify` to the page's `ack_uuid` (that UUID is the bearer), and is
-**opt-in per page** — it exists only when the page carries an `ack_uuid`.
+An ACK has two independent effects, and clients must keep them apart:
+
+1. **Queue confirmation** — `POST /mailboxes/<recipient>/ack` with `{"id":"<page-id>"}` removes
+   the page from the recipient's mailbox. This is transport hygiene and is possible for **every**
+   page, with or without an `ack_uuid`.
+2. **ACK report** — an ordinary `POST /notify` to the page's `ack_uuid` (that UUID is the bearer),
+   which tells the origin a human saw the page. This is **opt-in per page** and exists only when
+   the page carries an `ack_uuid`.
+
+A page that is delivered to the user stays queued until the user confirms it; the client then
+removes it and, when `ack_uuid` is present, sends the report below. A page that the rules keep
+silent is history only and is confirmed immediately without a report. ACK reports are never
+automatic for pages. ProLOG pages use a different, sender-managed ACK (a reply mailbox plus an
+`ack <token>` message); see [RFC-PagerAPP-0002 §6.4](rfc-pages.md).
 
 ```json
 {

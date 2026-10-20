@@ -25,7 +25,41 @@ enum VibrationPattern: String, Codable, CaseIterable {
 struct StatusRule: Codable, Equatable {
     var action: NotifyAction
     var timeBound: TimeBound
-    var vibration: VibrationPattern = .short
+    var vibration: VibrationPattern
+    var followsGeneralSchedule: Bool
+    var customWindows: [ActiveWindow]
+
+    init(
+        action: NotifyAction,
+        timeBound: TimeBound,
+        vibration: VibrationPattern = .short,
+        followsGeneralSchedule: Bool = true,
+        customWindows: [ActiveWindow] = []
+    ) {
+        self.action = action
+        self.timeBound = timeBound
+        self.vibration = vibration
+        self.followsGeneralSchedule = followsGeneralSchedule
+        self.customWindows = customWindows
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case action, timeBound, vibration, followsGeneralSchedule, customWindows
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        action = try c.decode(NotifyAction.self, forKey: .action)
+        timeBound = try c.decode(TimeBound.self, forKey: .timeBound)
+        vibration = try c.decodeIfPresent(VibrationPattern.self, forKey: .vibration) ?? .short
+        followsGeneralSchedule = try c.decodeIfPresent(Bool.self, forKey: .followsGeneralSchedule) ?? true
+        customWindows = try c.decodeIfPresent([ActiveWindow].self, forKey: .customWindows) ?? []
+    }
+
+    func windows(_ config: PagerConfig) -> [ActiveWindow] {
+        if followsGeneralSchedule { return config.activeWindows }
+        return customWindows.isEmpty ? config.activeWindows : customWindows
+    }
 }
 
 struct ActiveWindow: Codable, Equatable {
@@ -41,12 +75,60 @@ struct ActiveWindow: Codable, Equatable {
     }
 }
 
+let LEVEL_NAMES = ["debug", "info", "warning", "alarm", "critical"]
+
+func defaultLevelOrder() -> [String] {
+    ["info", "warning", "alarm", "critical", "debug"]
+}
+
+func sanitizeLevelOrder(_ order: [String]?) -> [String] {
+    var valid: [String] = []
+    for raw in order ?? [] {
+        let level = raw.trimmingCharacters(in: .whitespaces).lowercased()
+        if LEVEL_NAMES.contains(level) && !valid.contains(level) { valid.append(level) }
+    }
+    return valid + LEVEL_NAMES.filter { !valid.contains($0) }
+}
+
 struct PagerConfig: Codable, Equatable {
-    var statusRules: [Int: StatusRule] = [:]
-    var activeWindows: [ActiveWindow] = [ActiveWindow(startMinutes: 7 * 60, endMinutes: 23 * 60)]
-    var bypassMode: Bool = false
-    var silenceMode: Bool = false
-    var watchMode: WatchMode = .off
+    var statusRules: [Int: StatusRule]
+    var activeWindows: [ActiveWindow]
+    var bypassMode: Bool
+    var silenceMode: Bool
+    var watchMode: WatchMode
+    var levelOrder: [String]
+
+    init(
+        statusRules: [Int: StatusRule] = [:],
+        activeWindows: [ActiveWindow] = [ActiveWindow(startMinutes: 7 * 60, endMinutes: 23 * 60)],
+        bypassMode: Bool = false,
+        silenceMode: Bool = false,
+        watchMode: WatchMode = .off,
+        levelOrder: [String] = defaultLevelOrder()
+    ) {
+        self.statusRules = statusRules
+        self.activeWindows = activeWindows
+        self.bypassMode = bypassMode
+        self.silenceMode = silenceMode
+        self.watchMode = watchMode
+        self.levelOrder = sanitizeLevelOrder(levelOrder)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case statusRules, activeWindows, bypassMode, silenceMode, watchMode, levelOrder
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        statusRules = try c.decodeIfPresent([Int: StatusRule].self, forKey: .statusRules) ?? [:]
+        activeWindows = try c.decodeIfPresent([ActiveWindow].self, forKey: .activeWindows)
+            ?? [ActiveWindow(startMinutes: 7 * 60, endMinutes: 23 * 60)]
+        bypassMode = try c.decodeIfPresent(Bool.self, forKey: .bypassMode) ?? false
+        silenceMode = try c.decodeIfPresent(Bool.self, forKey: .silenceMode) ?? false
+        watchMode = try c.decodeIfPresent(WatchMode.self, forKey: .watchMode) ?? .off
+        let order = try c.decodeIfPresent([String].self, forKey: .levelOrder)
+        levelOrder = sanitizeLevelOrder(order)
+    }
 }
 
 struct Page: Identifiable, Equatable {
@@ -58,8 +140,14 @@ struct Page: Identifiable, Equatable {
     var logs: String?
     var prio: String?
     var ackUuid: String?
+    var replyUuid: String? = nil
+    var ackToken: String? = nil
 
     var ackAvailable: Bool { !(ackUuid ?? "").trimmingCharacters(in: .whitespaces).isEmpty }
+    var prologAckAvailable: Bool {
+        !(replyUuid ?? "").trimmingCharacters(in: .whitespaces).isEmpty &&
+            !(ackToken ?? "").trimmingCharacters(in: .whitespaces).isEmpty
+    }
 }
 
 struct Decision: Equatable {
@@ -86,8 +174,20 @@ func defaultRuleFor(_ status: Int) -> StatusRule {
 
 // MARK: - Decide (port of shared/Decision.kt)
 
+func statusForUrgency(_ prio: String?) -> Int? {
+    switch (prio ?? "").trimmingCharacters(in: .whitespaces).lowercased() {
+    case "debug": return STATUS_DEBUG
+    case "info": return 0
+    case "warning": return 1
+    case "alarm": return 2
+    case "critical": return 3
+    default: return nil
+    }
+}
+
 func decide(_ page: Page, _ config: PagerConfig, nowMinutes: Int) -> Decision {
-    let rule = config.statusRules[page.status] ?? defaultRuleFor(page.status)
+    let status = statusForUrgency(page.prio) ?? page.status
+    let rule = config.statusRules[status] ?? defaultRuleFor(status)
 
     if config.silenceMode {
         return Decision(notify: false, action: .silent, channels: [], vibration: rule.vibration,
@@ -98,7 +198,7 @@ func decide(_ page: Page, _ config: PagerConfig, nowMinutes: Int) -> Decision {
     switch rule.timeBound {
     case .never: within = false
     case .always: within = true
-    case .activeHours: within = config.activeWindows.contains { $0.contains(minutes: nowMinutes) }
+    case .activeHours: within = rule.windows(config).contains { $0.contains(minutes: nowMinutes) }
     }
     let show = config.bypassMode || within
     let reason = config.bypassMode ? "bypass mode"
@@ -127,6 +227,7 @@ final class Deduplicator {
 // MARK: - ACK (port of shared/Ack.kt)
 
 let STATUS_ACKNOWLEDGED = 6
+let STATUS_DEBUG = 7
 
 struct AckRequest {
     let targetUuid: String
@@ -148,27 +249,104 @@ func buildAck(_ page: Page, ownUuid: String) -> AckRequest? {
     return AckRequest(targetUuid: target, payload: payload)
 }
 
+/// ProLOG's sender-managed ACK: a plain page with the token to its reply mailbox.
+func buildPrologAck(_ page: Page) -> AckRequest? {
+    guard let target = page.replyUuid, !target.trimmingCharacters(in: .whitespaces).isEmpty,
+          let token = page.ackToken, !token.trimmingCharacters(in: .whitespaces).isEmpty
+    else { return nil }
+    return AckRequest(targetUuid: target, payload: [
+        "PROJECT": "PagerAPP",
+        "status": 0,
+        "message": "ack \(token)",
+        "JOB_ID": "ack \(token)",
+    ])
+}
+
 // MARK: - Page parsing (port of shared/PageParser.kt)
 
 enum PageParser {
     static func parse(_ json: [String: Any]) throws -> Page {
         guard let id = json["id"] as? String else { throw ParseError.missingId }
-        let status: Int
-        if let n = json["status"] as? Int { status = n }
-        else if let n = json["status"] as? Double { status = Int(n) }
-        else if let s = json["status"] as? String, let n = Int(s) { status = n }
-        else { throw ParseError.badStatus }
+        let project = json["PROJECT"] as? String
+        let message = json["message"] as? String
+        let logs = json["logs"] as? String
+        let parsedStatus = parseStatus(json["status"])
+        let rawPrio = (json["prio"] as? String)?.trimmingCharacters(in: .whitespaces)
+        let prio: String?
+        if let rawPrio, statusForUrgency(rawPrio) != nil {
+            prio = rawPrio
+        } else {
+            prio = prologLevel(message, project: project) ?? rawPrio
+        }
+        let prologAck = parsePrologAck(logs)
         return Page(
             id: id,
-            status: status,
-            project: json["PROJECT"] as? String,
+            status: statusForUrgency(prio) ?? parsedStatus,
+            project: project,
             jobId: json["JOB_ID"] as? String,
-            message: json["message"] as? String,
-            logs: json["logs"] as? String,
-            prio: json["prio"] as? String,
-            ackUuid: json["ack_uuid"] as? String
+            message: message,
+            logs: logs,
+            prio: prio,
+            ackUuid: json["ack_uuid"] as? String,
+            replyUuid: (json["reply_uuid"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? prologAck?.0,
+            ackToken: (json["ack_token"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? prologAck?.1
         )
     }
 
-    enum ParseError: Error { case missingId, badStatus }
+    static func parseStatus(_ raw: Any?) -> Int {
+        if let n = raw as? Int { return n }
+        if let n = raw as? Double { return Int(n) }
+        if let s = raw as? String {
+            if let n = Int(s.trimmingCharacters(in: .whitespaces)) { return n }
+            switch s.trimmingCharacters(in: .whitespaces).lowercased() {
+            case "success", "ok", "succeeded", "done", "completed", "complete": return 0
+            case "warning", "warn": return 1
+            case "failed", "failure", "fail", "error": return 2
+            case "critical", "fatal", "urgent": return 3
+            case "in progress", "in_progress", "running", "started": return 4
+            case "queued", "pending": return 5
+            case "acknowledged", "ack": return STATUS_ACKNOWLEDGED
+            default: return 1
+            }
+        }
+        return 1
+    }
+
+    static func prologLevel(_ message: String?, project: String?) -> String? {
+        guard project?.lowercased() == "prolog", let message else { return nil }
+        let text = message.trimmingCharacters(in: .whitespaces)
+        guard text.hasPrefix("["), let close = text.firstIndex(of: "]") else { return nil }
+        let level = String(text[text.index(after: text.startIndex)..<close]).lowercased()
+        return statusForUrgency(level) == nil ? nil : level
+    }
+
+    static func parsePrologAck(_ logs: String?) -> (String, String)? {
+        guard let logs else { return nil }
+        let lines = logs.components(separatedBy: .newlines).map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }
+        guard let marker = lines.firstIndex(where: {
+            $0.lowercased().hasPrefix("ack verplicht")
+        }) else { return nil }
+        let tail = lines.dropFirst(marker + 1)
+        let uuidPattern = try! NSRegularExpression(
+            pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        )
+        guard let uuid = tail.first(where: { line in
+            uuidPattern.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) != nil
+        }) else { return nil }
+        guard let tokenLine = tail.first(where: {
+            $0.range(of: "ack ", options: .caseInsensitive) != nil
+        }), let range = tokenLine.range(of: "ack ", options: .caseInsensitive) else { return nil }
+        let token = tokenLine[range.upperBound...]
+            .trimmingCharacters(in: .whitespaces)
+            .split(whereSeparator: { $0.isWhitespace })
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".,;:"))
+        guard let token, !token.isEmpty else { return nil }
+        return (uuid, token)
+    }
+
+    enum ParseError: Error { case missingId }
 }

@@ -10,7 +10,7 @@ struct PagesView: View {
                     HStack {
                         Text(entry.jobId ?? entry.project ?? "page").bold()
                         Spacer()
-                        Text(statusLabel(entry.status))
+                        Text(statusLabel(entry.status, entry.prio))
                             .foregroundStyle(statusColor(entry.status))
                     }
                     Text(entry.message ?? "(no message)")
@@ -26,12 +26,18 @@ struct PagesView: View {
 
     private func subtitle(_ entry: HistoryEntry) -> String {
         var parts = ["status \(entry.status)"]
-        if !(entry.ackUuid ?? "").isEmpty { parts.append("ACK available") }
+        if !(entry.ackUuid ?? "").isEmpty || !(entry.replyUuid ?? "").isEmpty {
+            parts.append("ACK available")
+        }
         if !entry.delivered { parts.append("not notified") }
         return parts.joined(separator: " · ")
     }
 
-    private func statusLabel(_ status: Int) -> String {
+    private func statusLabel(_ status: Int, _ prio: String?) -> String {
+        if let level = prio?.lowercased(),
+           ["debug", "info", "warning", "alarm", "critical"].contains(level) {
+            return "\(status) \(level.capitalized)"
+        }
         switch status {
         case 0: return "0 Success"
         case 1: return "1 Warning"

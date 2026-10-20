@@ -40,6 +40,27 @@ class DefaultRuleTest {
     }
 }
 
+class LevelOrderTest {
+    @Test
+    fun defaultsToTheFamiliarProLogDisplayOrder() {
+        assertEquals(listOf("info", "warning", "alarm", "critical", "debug"), defaultLevelOrder())
+    }
+
+    @Test
+    fun movesLevelsWithoutLosingAny() {
+        assertEquals(
+            listOf("critical", "debug", "info", "warning", "alarm"),
+            sanitizeLevelOrder(listOf("critical", "debug", "bogus", "debug")),
+        )
+    }
+
+    @Test
+    fun unknownOrderFallsBackToTheDefaultOrder() {
+        assertEquals(defaultLevelOrder(), sanitizeLevelOrder(null))
+        assertEquals(defaultLevelOrder(), sanitizeLevelOrder(emptyList()))
+    }
+}
+
 class DecideTest {
     private val night = LocalTime.of(3, 0)
     private val day = LocalTime.of(12, 0)
@@ -118,6 +139,54 @@ class DecideTest {
         assertFalse(decide(pageStatus(1), cfg, LocalTime.of(12, 30)).notify)
         assertTrue(decide(pageStatus(1), cfg, LocalTime.of(13, 30)).notify)
     }
+
+    @Test
+    fun urgencyOverridesOutcomeStatus() {
+        val critical = Page(id = "m", status = 0, prio = "critical")
+        val decision = decide(critical, PagerConfig(), night)
+        assertTrue(decision.notify)
+        assertEquals(NotifyAction.URGENT, decision.action)
+
+        val debug = Page(id = "d", status = 0, prio = "debug")
+        assertFalse(decide(debug, PagerConfig(), day).notify)
+    }
+
+    @Test
+    fun levelCanUseItsOwnScheduleInsteadOfTheGeneralOne() {
+        val rule = StatusRule(
+            action = NotifyAction.SOUND_VIBRATE,
+            timeBound = TimeBound.ACTIVE_HOURS,
+            followsGeneralSchedule = false,
+            customWindows = listOf(ActiveWindow(LocalTime.of(22, 0), LocalTime.of(6, 0))),
+        )
+        val cfg = PagerConfig(statusRules = mapOf(1 to rule))
+        assertTrue(decide(pageStatus(1), cfg, LocalTime.of(23, 30)).notify)
+        assertFalse(decide(pageStatus(1), cfg, day).notify)
+    }
+
+    @Test
+    fun repeatAlertFlowsIntoTheDecision() {
+        val rule = StatusRule(
+            action = NotifyAction.URGENT,
+            timeBound = TimeBound.ALWAYS,
+            repeat = true,
+        )
+        val cfg = PagerConfig(statusRules = mapOf(3 to rule))
+        assertTrue(decide(pageStatus(3), cfg, night).repeat)
+    }
+
+    @Test
+    fun emptyCustomScheduleFallsBackToTheGeneralOne() {
+        val rule = StatusRule(
+            action = NotifyAction.SOUND_VIBRATE,
+            timeBound = TimeBound.ACTIVE_HOURS,
+            followsGeneralSchedule = false,
+            customWindows = emptyList(),
+        )
+        val cfg = PagerConfig(statusRules = mapOf(1 to rule))
+        assertTrue(decide(pageStatus(1), cfg, day).notify)
+        assertFalse(decide(pageStatus(1), cfg, night).notify)
+    }
 }
 
 class DeduplicatorTest {
@@ -180,6 +249,88 @@ class PageParserTest {
     fun unknownTextStatusIsSurfacedNotDropped() {
         assertEquals(STATUS_UNKNOWN_TEXT, PageParser.parse(mapOf("id" to "m", "status" to "banana")).status)
     }
+
+    @Test
+    fun parsesPrologLevelFromTitleAndAckFooter() {
+        val reply = "9d01837b-ecdc-4aad-bcaa-6e82daf75f51"
+        val p = PageParser.parse(
+            mapOf(
+                "id" to "m1",
+                "status" to "success",
+                "PROJECT" to "ProLog",
+                "JOB_ID" to "prolog-2-4321",
+                "message" to "[CRITICAL] ACTIEF · Slacht · 4321",
+                "logs" to "body\n\n------------------------\n" +
+                    "ACK verplicht. Antwoord met een bericht naar mailbox:\n" +
+                    "$reply\nmet in de tekst: ack 1a2b3c4d",
+            ),
+        )
+        assertEquals(3, p.status)
+        assertEquals("critical", p.prio)
+        assertEquals("body", p.logs)
+        assertEquals(reply, p.replyUuid)
+        assertEquals("1a2b3c4d", p.ackToken)
+        assertTrue(p.prologAckAvailable)
+    }
+
+    @Test
+    fun topLevelPrioAndAckFieldsWin() {
+        val p = PageParser.parse(
+            mapOf(
+                "id" to "m1",
+                "status" to "success",
+                "PROJECT" to "ProLog",
+                "message" to "[CRITICAL] ACTIEF · Slacht · 4321",
+                "prio" to "warning",
+                "reply_uuid" to "reply-box",
+                "ack_token" to "deadbeef",
+            ),
+        )
+        assertEquals(1, p.status)
+        assertEquals("warning", p.prio)
+        assertEquals("reply-box", p.replyUuid)
+        assertEquals("deadbeef", p.ackToken)
+    }
+
+    @Test
+    fun ignoresTitleLevelOutsideProlog() {
+        val p = PageParser.parse(
+            mapOf(
+                "id" to "m1",
+                "status" to 0,
+                "PROJECT" to "Other",
+                "message" to "[CRITICAL] not a ProLOG page",
+            ),
+        )
+        assertEquals(0, p.status)
+        assertEquals(null, p.prio)
+    }
+
+    @Test
+    fun parsesPhotoChunkFields() {
+        val page = PageParser.parse(
+            mapOf(
+                "id" to "m",
+                "status" to 10,
+                "image_id" to "img-1",
+                "image_part" to "2",
+                "image_total" to 5,
+                "image_chunk" to "armor",
+                "image_sha256" to "a".repeat(64),
+            ),
+        )
+        assertEquals("img-1", page.imageId)
+        assertEquals(2, page.imagePart)
+        assertEquals(5, page.imageTotal)
+        assertEquals("armor", page.imageChunk)
+        assertEquals("a".repeat(64), page.imageSha256)
+    }
+
+    @Test
+    fun mapsDebugToItsOwnSilentStatus() {
+        val p = PageParser.parse(mapOf("id" to "m", "status" to "success", "prio" to "debug"))
+        assertEquals(STATUS_DEBUG, p.status)
+    }
 }
 
 class AckTest {
@@ -216,6 +367,95 @@ class AckTest {
 
         val blankNote = buildAck(page("peer"), ownUuid = "me", note = "   ")
         assertEquals("Acknowledged", blankNote!!.payload["message"])
+    }
+
+    @Test
+    fun prologAckIsAPlainTokenReply() {
+        val prologPage = Page(
+            id = "m1",
+            status = 3,
+            jobId = "prolog-2-4321",
+            replyUuid = "reply-box",
+            ackToken = "1a2b3c4d",
+        )
+        val ack = buildPrologAck(prologPage)!!
+        assertEquals("reply-box", ack.targetUuid)
+        assertEquals("ack 1a2b3c4d", ack.payload["message"])
+        assertEquals("ack 1a2b3c4d", ack.payload["JOB_ID"])
+        assertEquals(0, ack.payload["status"])
+        assertEquals(null, buildPrologAck(Page(id = "m2", status = 3)))
+    }
+}
+
+class PhotoTest {
+    private fun contact(publicKey: String = "peer-key") = Contact(
+        name = "Peer",
+        serverUrl = "https://pager.example",
+        uuid = "channel",
+        senderId = "peer-sid",
+        mySenderId = "my-sid",
+        publicKey = publicKey,
+    )
+
+    @Test
+    fun splitsAnEncryptedPhotoIntoReassemblableChunks() {
+        val keys = Pgp.generate("Peer <pagerapp>")
+        val image = ByteArray(2_000) { (it * 17 % 251).toByte() }
+        val photo = buildOutgoingPhotoChunks(
+            contact(keys.publicArmored),
+            ownName = "Me",
+            imageJpeg = image,
+            imageId = "img-1",
+            myPublicArmored = keys.publicArmored,
+        )!!
+        assertEquals("img-1", photo.imageId)
+        assertTrue(photo.chunks.isNotEmpty())
+        assertEquals(1, photo.chunks.first()["image_part"])
+        assertEquals(photo.chunks.size, photo.chunks.last()["image_total"])
+        assertTrue(photo.chunks.first()["pub"] != null)
+        assertTrue(photo.chunks.drop(1).all { it["pub"] == null })
+
+        val armor = photo.chunks.joinToString("") { it["image_chunk"] as String }
+        assertEquals(photo.sha256, sha256Hex(armor))
+        assertTrue(Pgp.decryptBytes(armor, keys.secretArmored).contentEquals(image))
+    }
+
+    @Test
+    fun rejectsPhotosOverTheDirectLimit() {
+        val keys = Pgp.generate("Peer <pagerapp>")
+        val tooBig = ByteArray(PHOTO_MAX_BYTES + 1)
+        assertEquals(
+            null,
+            buildOutgoingPhotoChunks(contact(keys.publicArmored), "Me", tooBig, "img-2"),
+        )
+    }
+
+    @Test
+    fun fileLinkRoundTripsWithNameAndMime() {
+        val link = FileLink(
+            "https://share.h4ck.io/abc/report.asc",
+            "a".repeat(64),
+            days = 3,
+            name = "report final.pdf",
+            mime = "application/pdf",
+        )
+        val parsed = FileLink.parse(link.encode())!!
+        assertEquals(link.url, parsed.url)
+        assertEquals(link.sha256, parsed.sha256)
+        assertEquals("report final.pdf", parsed.name)
+        assertEquals("application/pdf", parsed.mime)
+        assertEquals(3, parsed.days)
+        assertEquals(null, FileLink.parse("https://share.h4ck.io/abc/report.asc"))
+    }
+
+    @Test
+    fun photoLinkRoundTrips() {
+        val link = PhotoLink("https://share.h4ck.io/abc/photo.asc", "a".repeat(64), days = 3)
+        val parsed = PhotoLink.parse(link.encode())!!
+        assertEquals(link.url, parsed.url)
+        assertEquals(link.sha256, parsed.sha256)
+        assertEquals(3, parsed.days)
+        assertEquals(null, PhotoLink.parse("https://share.h4ck.io/abc/photo.asc"))
     }
 }
 

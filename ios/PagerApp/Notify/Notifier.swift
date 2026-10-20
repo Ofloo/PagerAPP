@@ -29,7 +29,12 @@ enum Notifier {
             .compactMap { $0 }
             .joined(separator: "\n\n")
         content.categoryIdentifier = categoryId
-        content.userInfo = ["page_id": page.id, "ack_uuid": page.ackUuid ?? ""]
+        content.userInfo = [
+            "page_id": page.id,
+            "ack_uuid": page.ackUuid ?? "",
+            "reply_uuid": page.replyUuid ?? "",
+            "ack_token": page.ackToken ?? "",
+        ]
         if audible { content.sound = .default } else { content.sound = nil }
 
         let request = UNNotificationRequest(

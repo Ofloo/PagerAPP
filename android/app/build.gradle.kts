@@ -7,6 +7,11 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Google push (FCM) is opt-in: without android/app/google-services.json the app still builds; it
+// simply cannot use that wake-up channel and the Settings switch stays inert.
+if (file("google-services.json").exists()) apply(plugin = "com.google.gms.google-services")
+
+
 // Release signing comes from android/keystore.properties (git-ignored). When absent, the
 // release variant is left unsigned; debug builds are unaffected.
 val keystoreProps = Properties().apply {
@@ -23,8 +28,8 @@ android {
         applicationId = "io.ofloo.pagerapp"
         minSdk = 26
         targetSdk = 36
-        versionCode = 64
-        versionName = "0.1.64"
+        versionCode = 105
+        versionName = "0.1.105"
     }
 
     signingConfigs {
@@ -83,6 +88,10 @@ kotlin {
 }
 
 dependencies {
+    implementation("com.google.firebase:firebase-messaging:26.0.0")
+    // Firebase drags in androidx.fragment 1.0.0 transitively; registerForActivityResult needs at
+    // least 1.3.0, so pin a current one (lint fails the release build otherwise).
+    implementation("androidx.fragment:fragment:1.8.5")
     implementation(project(":shared"))
 
     implementation("androidx.core:core-ktx:1.13.1")

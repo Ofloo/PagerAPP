@@ -8,11 +8,15 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import io.ofloo.pagerapp.R
 import io.ofloo.pagerapp.data.Store
 import io.ofloo.pagerapp.net.PagerClient
 import io.ofloo.pagerapp.notify.Notifications
+import io.ofloo.pagerapp.notify.Notifier
+import io.ofloo.pagerapp.notify.RepeatAlerts
 import io.ofloo.pagerapp.shared.Contact
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
 /**
@@ -48,6 +52,16 @@ class PollService : Service() {
 
     @Volatile private var running = true
 
+    /** Re-posts "continue until ACK" notifications with a fresh id every 15 seconds. */
+    private val repeatThread = thread(
+        start = false,
+        isDaemon = true,
+        name = "pager-repeat",
+        block = ::repeatLoop,
+    )
+
+    private val repeatCounter = AtomicInteger(0)
+
     override fun onCreate() {
         super.onCreate()
         Notifications.ensureChannels(this)
@@ -57,6 +71,7 @@ class PollService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (streamThread.state == Thread.State.NEW) streamThread.start()
         if (pollThread.state == Thread.State.NEW) pollThread.start()
+        if (repeatThread.state == Thread.State.NEW) repeatThread.start()
         return START_STICKY
     }
 
@@ -66,6 +81,7 @@ class PollService : Service() {
         running = false
         streamThread.interrupt()
         pollThread.interrupt()
+        repeatThread.interrupt()
         super.onDestroy()
     }
 
@@ -84,21 +100,30 @@ class PollService : Service() {
                     start = true,
                     isDaemon = true,
                     name = "pager-stream-$own",
-                    block = { streamMailbox(own, null) },
+                    block = { streamMailbox(own, null, store.serverUrl) },
                 )
+            }
+            store.pageMailboxes().forEach { address ->
+                if (streams[address.uuid]?.isAlive != true) {
+                    streams[address.uuid] = thread(
+                        start = true,
+                        isDaemon = true,
+                        name = "pager-stream-${address.uuid}",
+                        block = { streamMailbox(address.uuid, null, address.serverUrl) },
+                    )
+                }
             }
             if (!sleepQuietly(30_000)) return
         }
     }
 
     /** Holds one mailbox's stream, reconnecting with backoff and sweeping when it drops. */
-    private fun streamMailbox(mailbox: String, contact: Contact?) {
+    private fun streamMailbox(mailbox: String, contact: Contact?, serverUrl: String) {
         var backoffMs = 1_000L
         while (running) {
-            val store = Store(this)
             try {
-                PagerClient.streamEvents(store.serverUrl, mailbox) { page ->
-                    Poller.handlePages(this, mailbox, store.serverUrl, contact, listOf(page))
+                PagerClient.streamEvents(serverUrl, mailbox) { page ->
+                    Poller.handlePages(this, mailbox, serverUrl, contact, listOf(page))
                 }
                 backoffMs = 1_000L
             } catch (e: Exception) {
@@ -106,7 +131,7 @@ class PollService : Service() {
             }
             if (!running) return
             // Stream gone: sweep once (the server replays anything unacked) and back off.
-            runCatching { Poller.pollMailbox(this, mailbox, store.serverUrl, contact) }
+            runCatching { Poller.pollMailbox(this, mailbox, serverUrl, contact) }
             if (!sleepQuietly(backoffMs)) return
             backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
         }
@@ -127,6 +152,48 @@ class PollService : Service() {
                 runCatching { lock?.let { if (it.isHeld) it.release() } }
             }
             if (!sleepQuietly(interval * 1000L)) return
+        }
+    }
+
+    /**
+     * Reposts each repeat page with a new notification id (the same id would be an update and would
+     * not replay the channel sound). Cancelling the old id keeps a single notification per page.
+     * An ACK removes the page from [RepeatAlerts], so the next pass stops repeating it.
+     */
+    private fun repeatLoop() {
+        var next = 0L
+        while (running) {
+            val now = System.currentTimeMillis()
+            val alerts = if (now >= next) RepeatAlerts.snapshot() else emptyList()
+            if (alerts.isNotEmpty()) {
+                val nm = NotificationManagerCompat.from(this)
+                alerts.forEach { alert ->
+                    if (!RepeatAlerts.contains(alert.page.id)) return@forEach
+                    val oldId = alert.notificationId
+                    val newId = alert.page.id.hashCode() xor (repeatCounter.incrementAndGet() shl 8)
+                    try {
+                        Notifier.post(
+                            context = this,
+                            page = alert.page,
+                            audible = alert.audible,
+                            channel = alert.channel,
+                            mailbox = alert.mailbox,
+                            serverUrl = alert.serverUrl,
+                            imagePath = alert.imagePath,
+                            sound = alert.sound,
+                            vibration = alert.vibration,
+                            repeat = false,
+                            notificationId = newId,
+                        )
+                        RepeatAlerts.updateId(alert.page.id, newId)
+                        nm.cancel(oldId)
+                    } catch (error: Exception) {
+                        Log.w(TAG, "repeat alert failed: ${error.message}")
+                    }
+                }
+                next = now + 15_000L
+            }
+            if (!sleepQuietly(1_000L)) return
         }
     }
 

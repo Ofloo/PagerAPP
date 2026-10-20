@@ -1,0 +1,55 @@
+package io.ofloo.pagerapp.shared
+
+import java.net.URLDecoder
+import java.net.URLEncoder
+
+/**
+ * A pointer to a larger file uploaded to the share host. The file was encrypted to the peer before
+ * upload, so the URL is only useful together with the peer's private key. [days] is the host's
+ * retention, fetched at upload time (default 3).
+ */
+data class FileLink(
+    val url: String,
+    val sha256: String,
+    val days: Int = 3,
+    val name: String = "attachment",
+    val mime: String = "application/octet-stream",
+) {
+    fun encode(): String = buildString {
+        append("pagerapp://file?u=")
+        append(encodePart(url))
+        append("&h=").append(sha256)
+        append("&d=").append(days)
+        append("&n=").append(encodePart(name))
+        append("&t=").append(encodePart(mime))
+    }
+
+    companion object {
+        private const val PREFIX = "pagerapp://file?"
+
+        fun parse(text: String?): FileLink? {
+            val raw = text?.trim() ?: return null
+            if (!raw.startsWith(PREFIX, ignoreCase = true)) return null
+            val values = raw.substring(PREFIX.length).split('&').mapNotNull { part ->
+                val at = part.indexOf('=')
+                if (at <= 0) null else part.substring(0, at) to part.substring(at + 1)
+            }.toMap()
+            val url = values["u"]?.let { decodePart(it) } ?: return null
+            val sha = values["h"]?.lowercase() ?: return null
+            if (!url.startsWith("https://", ignoreCase = true)) return null
+            if (!sha.matches(Regex("[0-9a-f]{64}"))) return null
+            val days = values["d"]?.toIntOrNull()?.takeIf { it in 1..365 } ?: 3
+            val name = values["n"]?.let { decodePart(it) }?.takeIf { it.isNotBlank() }
+                ?: "attachment"
+            val mime = values["t"]?.let { decodePart(it) }?.takeIf { it.isNotBlank() }
+                ?: "application/octet-stream"
+            return FileLink(url, sha, days, name, mime)
+        }
+
+        private fun encodePart(value: String): String =
+            URLEncoder.encode(value, Charsets.UTF_8.name())
+
+        private fun decodePart(value: String): String =
+            runCatching { URLDecoder.decode(value, Charsets.UTF_8.name()) }.getOrNull() ?: value
+    }
+}

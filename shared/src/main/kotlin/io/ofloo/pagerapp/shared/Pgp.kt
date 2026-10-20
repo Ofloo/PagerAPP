@@ -218,10 +218,13 @@ object Pgp {
     }
 
     /** Encrypts [plaintext] to the holder of [recipientPublicArmored]. */
-    fun encrypt(plaintext: String, recipientPublicArmored: String): String {
+    fun encrypt(plaintext: String, recipientPublicArmored: String): String =
+        encryptBytes(plaintext.toByteArray(Charsets.UTF_8), recipientPublicArmored)
+
+    /** Encrypts arbitrary bytes (a photo) to the holder of [recipientPublicArmored]. */
+    fun encryptBytes(bytes: ByteArray, recipientPublicArmored: String): String {
         ensureProvider()
         val recipient = readPublicKey(recipientPublicArmored)
-        val bytes = plaintext.toByteArray(Charsets.UTF_8)
 
         val literal = ByteArrayOutputStream()
         val literalGenerator = PGPLiteralDataGenerator()
@@ -245,7 +248,11 @@ object Pgp {
     }
 
     /** Decrypts an armored message produced by [encrypt]. */
-    fun decrypt(armored: String, secretArmored: String, passphrase: CharArray? = null): String {
+    fun decrypt(armored: String, secretArmored: String, passphrase: CharArray? = null): String =
+        decryptBytes(armored, secretArmored, passphrase).toString(Charsets.UTF_8)
+
+    /** Decrypts an armored message produced by [encryptBytes] into its original bytes. */
+    fun decryptBytes(armored: String, secretArmored: String, passphrase: CharArray? = null): ByteArray {
         ensureProvider()
         val secretRing = PGPSecretKeyRing(
             PGPUtil.getDecoderStream(ByteArrayInputStream(secretArmored.toByteArray())),
@@ -290,8 +297,12 @@ object Pgp {
             obj = objectFactory.nextObject()
         }
         val literal = obj as? PGPLiteralData ?: error("no literal data in the message")
-        return literal.inputStream.use { it.readBytes() }.toString(Charsets.UTF_8)
+        return literal.inputStream.use { it.readBytes() }
     }
+
+    /** Key size of an armored public key (e.g. 2048); null when it cannot be read. */
+    fun bitsOf(armored: String): Int? =
+        runCatching { readPublicKey(armored).bitStrength }.getOrNull()
 
     /** The encryption-capable public key from an armored public key block. */
     fun readPublicKey(armored: String): PGPPublicKey {

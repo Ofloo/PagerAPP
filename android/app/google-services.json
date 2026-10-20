@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "571347739654",
+    "project_id": "pagermcp-6a3a5",
+    "storage_bucket": "pagermcp-6a3a5.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:571347739654:android:07366b4b4d3ffd31ba8f87",
+        "android_client_info": {
+          "package_name": "io.ofloo.pagerapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBKoFRgFFvr88XKjXEXUfUKmPScpqkcf2Y"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

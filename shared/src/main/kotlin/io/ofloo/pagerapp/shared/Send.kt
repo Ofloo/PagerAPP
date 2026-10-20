@@ -3,6 +3,61 @@ package io.ofloo.pagerapp.shared
 /** Numeric status used for a plain chat message between contacts (custom range, silent). */
 const val STATUS_MESSAGE = 10
 
+/** Direct chat photos are capped at this many JPEG bytes; larger ones use the share-link path. */
+const val PHOTO_MAX_BYTES = 1_000_000
+
+/** One PagerMCP message can carry this many armored characters (64 KiB body with JSON overhead). */
+const val PHOTO_CHUNK_CHARS = 30_000
+
+/** A photo split into chat messages, plus the id and hash needed to reassemble it. */
+data class OutgoingPhoto(
+    val imageId: String,
+    val sha256: String,
+    val chunks: List<Map<String, Any?>>,
+)
+
+/**
+ * Encrypts [imageJpeg] to the peer and splits the armored ciphertext into numbered chat pages.
+ * Each page stays well under PagerMCP's 64 KiB body limit. Returns null when the peer's key is
+ * unknown, the image is empty, or it exceeds [PHOTO_MAX_BYTES].
+ */
+fun buildOutgoingPhotoChunks(
+    to: Contact,
+    ownName: String?,
+    imageJpeg: ByteArray,
+    imageId: String,
+    myPublicArmored: String? = null,
+): OutgoingPhoto? {
+    if (imageJpeg.isEmpty() || imageJpeg.size > PHOTO_MAX_BYTES) return null
+    if (to.publicKey.isBlank()) return null
+    val armor = Pgp.encryptBytes(imageJpeg, to.publicKey)
+    val pieces = armor.chunked(PHOTO_CHUNK_CHARS)
+    val sha = sha256Hex(armor)
+    val chunks = pieces.mapIndexed { index, piece ->
+        linkedMapOf<String, Any?>(
+            "status" to STATUS_MESSAGE,
+            "from" to to.mySenderId,
+            "from_name" to ownName,
+            "image_id" to imageId,
+            "image_part" to index + 1,
+            "image_total" to pieces.size,
+            "image_chunk" to piece,
+            "image_sha256" to sha,
+        ).apply {
+            if (index == 0 && !myPublicArmored.isNullOrBlank()) this["pub"] = myPublicArmored
+        }
+    }
+    return OutgoingPhoto(imageId, sha, chunks)
+}
+
+/** Lower-case SHA-256 of [bytes] or of the UTF-8 encoding of [text]. */
+fun sha256Hex(bytes: ByteArray): String =
+    java.security.MessageDigest.getInstance("SHA-256")
+        .digest(bytes)
+        .joinToString("") { "%02x".format(it) }
+
+fun sha256Hex(text: String): String = sha256Hex(text.toByteArray(Charsets.UTF_8))
+
 /**
  * Builds the page body for a message sent to the channel in [to].
  *

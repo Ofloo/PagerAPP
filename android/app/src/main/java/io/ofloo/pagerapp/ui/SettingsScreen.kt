@@ -25,6 +25,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -45,8 +46,10 @@ import io.ofloo.pagerapp.data.Store
 import io.ofloo.pagerapp.AppLinks
 import io.ofloo.pagerapp.ThemeMode
 import io.ofloo.pagerapp.notify.Notifications
+import io.ofloo.pagerapp.net.MailboxStatus
 import io.ofloo.pagerapp.net.PagerClient
 import io.ofloo.pagerapp.net.ServerSettings
+import io.ofloo.pagerapp.push.PushManager
 import io.ofloo.pagerapp.shared.Pgp
 import io.ofloo.pagerapp.shared.WatchMode
 import kotlinx.coroutines.Dispatchers
@@ -69,6 +72,7 @@ fun SettingsScreen(
     var config by remember { mutableStateOf(store.config) }
     var theme by remember { mutableStateOf(store.themeMode) }
     var reliable by remember { mutableStateOf(store.reliableDelivery) }
+    var alarmPolling by remember { mutableStateOf(store.alarmPolling) }
     var showAbout by remember { mutableStateOf(false) }
     var restore by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
@@ -80,9 +84,27 @@ fun SettingsScreen(
     var keyBits by remember { mutableStateOf(store.keyBits) }
     var keyRevision by remember { mutableIntStateOf(0) }
     var generating by remember { mutableStateOf(false) }
+    var pushOn by remember { mutableStateOf(store.pushEnabled) }
+    var fcmOn by remember { mutableStateOf(store.fcmEnabled) }
+    var confirmReset by remember { mutableStateOf(false) }
+    var pushStatus by remember { mutableStateOf<MailboxStatus?>(null) }
+    var photoShare by remember { mutableStateOf(store.photoShareUrl) }
+    var shareRetention by remember { mutableStateOf<Int?>(null) }
+    var pageMailboxes by remember { mutableStateOf(store.pageMailboxes()) }
+    var newPageName by remember { mutableStateOf("") }
+    var generatingPage by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val uriHandler = LocalUriHandler.current
     val context = LocalContext.current
+
+    LaunchedEffect(Unit) {
+        pushStatus = withContext(Dispatchers.IO) { fetchMailboxStatus(store) }
+    }
+    LaunchedEffect(store.photoShareUrl) {
+        shareRetention = withContext(Dispatchers.IO) {
+            PhotoShare.retentionDays(store.photoShareUrl)
+        }
+    }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()),
@@ -139,47 +161,20 @@ fun SettingsScreen(
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Active hours", fontWeight = FontWeight.Bold)
+                Text("General schedule", fontWeight = FontWeight.Bold)
                 Text(
-                    "Statuses set to 'active hours' only notify inside this window.",
+                    "Levels set to 'General schedule' only notify inside these windows. A level " +
+                        "can instead use its own hours under Rules.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                config.activeWindows.forEachIndexed { index, window ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        OutlinedTextField(
-                            value = window.start.toString(),
-                            onValueChange = { v ->
-                                parseTime(v)?.let { t ->
-                                    val w = config.activeWindows.toMutableList()
-                                    w[index] = window.copy(start = t)
-                                    config = config.copy(activeWindows = w)
-                                    store.config = config
-                                }
-                            },
-                            label = { Text("start") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f),
-                        )
-                        OutlinedTextField(
-                            value = window.end.toString(),
-                            onValueChange = { v ->
-                                parseTime(v)?.let { t ->
-                                    val w = config.activeWindows.toMutableList()
-                                    w[index] = window.copy(end = t)
-                                    config = config.copy(activeWindows = w)
-                                    store.config = config
-                                }
-                            },
-                            label = { Text("end") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                }
-                Text("Format HH:MM, device local time.", style = MaterialTheme.typography.labelSmall)
+                WindowListEditor(
+                    windows = config.activeWindows,
+                    onChange = {
+                        config = config.copy(activeWindows = it)
+                        store.config = config
+                    },
+                    minWindows = 1,
+                )
             }
         }
 
@@ -219,9 +214,64 @@ fun SettingsScreen(
                     onCheckedChange = {
                         reliable = it
                         store.reliableDelivery = it
+                        if (it) { alarmPolling = false; store.alarmPolling = false }
                         onServiceChanged(true)   // re-apply the schedule
                     },
                 )
+                ToggleRow(
+                    label = "Wekker-polling (geen melding, ~1 min)",
+                    checked = alarmPolling,
+                    onCheckedChange = {
+                        alarmPolling = it
+                        store.alarmPolling = it
+                        if (it) {
+                            reliable = false
+                            store.reliableDelivery = false
+                            // Ask for exact alarms right away instead of leaving the user to find
+                            // the setting themselves.
+                            if (!io.ofloo.pagerapp.poll.AlarmPoll.exactAllowed(context)) {
+                                runCatching {
+                                    context.startActivity(
+                                        Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM),
+                                    )
+                                }
+                            }
+                        }
+                        onServiceChanged(true)
+                    },
+                )
+                if (alarmPolling) {
+                    Text(
+                        "De app wekt zichzelf elke " + poll + " s, haalt de postbussen op en slaapt weer. " +
+                            "Geen melding in de statusbalk en niets via Google. In diepe slaap rekt " +
+                            "Android dit op tot ongeveer negen minuten.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                    if (io.ofloo.pagerapp.poll.AlarmPoll.exactAllowed(context)) {
+                        Text(
+                            "Machtiging voor exacte wekkers: toegestaan — de wekker loopt op je " +
+                                "interval zolang je toestel wakker is.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    } else {
+                        Text(
+                            "Dit toestel staat exacte wekkers nog niet toe, dus de wekker kan " +
+                                "uitlopen tot ongeveer negen minuten. Zet de machtiging " +
+                                "\"Alarmen en herinneringen\" aan.",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                    TextButton(onClick = {
+                        runCatching {
+                            context.startActivity(
+                                Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM),
+                            )
+                        }
+                    }) { Text("Wekker-machtiging openen") }
+                }
                 if (!reliable) {
                     Text(
                         "Background mode: no notification, but Android's minimum is 15 minutes " +
@@ -261,6 +311,194 @@ fun SettingsScreen(
                         }
                     }) { Text("Hide its notification") }
                 }
+            }
+        }
+
+        // Push: the server wakes this device the moment a page lands, so nothing has to wait for
+        // the next poll. The page itself still travels the normal, encrypted path.
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Push", fontWeight = FontWeight.Bold)
+                // If Android does not let us notify, every wake-up is wasted: the page arrives but
+                // the user never learns about it. Say so, with a way to fix it.
+                if (!androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled()) {
+                    Text(
+                        "Meldingen staan uit voor PagerAPP, dus je krijgt niets te zien — ook al komen " +
+                            "pagina's binnen. Zet ze aan bij de instellingen van je toestel.",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                    TextButton(onClick = {
+                        runCatching {
+                            context.startActivity(
+                                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                    .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName),
+                            )
+                        }
+                    }) { Text("Meldingen aanzetten") }
+                }
+                ToggleRow(
+                    label = "Server push (SSE/UnifiedPush)",
+                    checked = pushOn,
+                    onCheckedChange = { on ->
+                        pushOn = on
+                        scope.launch {
+                            pushStatus = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    if (on) {
+                                        store.pushEnabled = true
+                                        PushManager.requestRegistration(context)
+                                        PushManager.renewIfNeeded(context, force = true)
+                                    } else {
+                                        PushManager.disable(context)
+                                    }
+                                    fetchMailboxStatus(store)
+                                }.getOrNull()
+                            }
+                        }
+                    },
+                )
+                // Optional route: Google wakes the app, which then fetches the page from PagerMCP.
+                ToggleRow(
+                    label = "Wake via Google (FCM)",
+                    checked = fcmOn,
+                    onCheckedChange = { on ->
+                        fcmOn = on
+                        scope.launch {
+                            pushStatus = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    if (on) {
+                                        store.fcmEnabled = true
+                                        PushManager.reconcileFcm(context, force = true)
+                                    } else {
+                                        PushManager.disableFcm(context)
+                                    }
+                                    fetchMailboxStatus(store)
+                                }.getOrNull()
+                            }
+                        }
+                    },
+                )
+                if (!PushManager.fcmAvailable()) {
+                    Text(
+                        "Not configured in this build: without google-services.json there is no " +
+                            "Firebase project to deliver through yet.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+                val status = pushStatus
+                Text(
+                    when {
+                        status == null -> "Reading the mailbox status…"
+                        status.pushEnabled && status.subscriptions > 0 -> {
+                            val expiry = status.daysUntilExpiry()
+                            "Push is on: ${status.subscriptions} subscription(s)" +
+                                (status.channels.takeIf { it.isNotEmpty() }?.joinToString(", ")?.let { " via $it" } ?: "") +
+                                (expiry?.let { ", expires in $it day(s)" } ?: "")
+                        }
+                        pushOn -> "Server push is enabled; a distributor endpoint is still needed for " +
+                            "the UnifiedPush route. FCM is configured separately below."
+                        else -> "Push is off."
+                    },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+                if (status != null) {
+                    Text(
+                        "Queued: ${status.messages} · retention: ${status.messageTtlSeconds / 86_400} d " +
+                            "(mailbox ${status.mailboxTtlSeconds / 86_400} d)",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+                if (store.uuid != null) {
+                    // Which app can actually deliver a wake-up for us? Without a distributor there
+                    // is no push at all, and that is invisible from the server's side.
+                    val installed = remember(pushStatus, pushOn) { PushManager.distributors(context) }
+                    Text(
+                        if (installed.isEmpty()) {
+                            "No distributor installed: push cannot work. Install (or update) the ntfy " +
+                                "app so it can hold the connection for us; polling keeps working either way."
+                        } else {
+                            "Distributor: ${PushManager.chosenDistributor(context) ?: "(not chosen yet)"}" +
+                                " · installed: ${installed.joinToString(", ")}"
+                        },
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = {
+                            scope.launch {
+                                pushStatus = withContext(Dispatchers.IO) {
+                                    runCatching {
+                                    PushManager.requestRegistration(context)
+                                    PushManager.renewIfNeeded(context, force = true)
+                                    if (store.fcmEnabled) PushManager.reconcileFcm(context, force = true)
+                                    fetchMailboxStatus(store)
+                                    }.getOrNull()
+                                }
+                            }
+                        }) { Text("Renew now") }
+                        TextButton(onClick = {
+                            scope.launch {
+                                pushStatus = withContext(Dispatchers.IO) {
+                                    runCatching { fetchMailboxStatus(store) }.getOrNull()
+                                }
+                            }
+                        }) { Text("Refresh") }
+                    }
+                    if (store.pushChannel.isNotBlank()) {
+                        Text(
+                            "Registered on channel \"${store.pushChannel}\".",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                }
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Photo sharing", fontWeight = FontWeight.Bold)
+                Text(
+                    "Photos are GPG-encrypted and uploaded to this transfer.sh-compatible host. " +
+                        "The encrypted link is sent in the chat; both devices should use the same " +
+                        "host to download each other's photos.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+                OutlinedTextField(
+                    value = photoShare,
+                    onValueChange = { photoShare = it },
+                    label = { Text("share host URL") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = {
+                        val url = photoShare.trim().trimEnd('/')
+                        if (!url.startsWith("https://")) {
+                            status = "Use an https:// URL for the share host"
+                        } else {
+                            store.photoShareUrl = url
+                            photoShare = url
+                            status = "Photo share host saved"
+                        }
+                    }) { Text("Save") }
+                    TextButton(onClick = {
+                        store.photoShareUrl = Store.DEFAULT_PHOTO_SHARE
+                        photoShare = Store.DEFAULT_PHOTO_SHARE
+                        status = "Photo share host reset"
+                    }) { Text("Default") }
+                }
+                val retentionLabel = shareRetention?.let { days -> "$days day(s)" } ?: "reading…"
+                Text(
+                    "Retention: $retentionLabel · default ${Store.DEFAULT_PHOTO_SHARE}",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelSmall,
+                )
             }
         }
 
@@ -472,6 +710,90 @@ fun SettingsScreen(
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Page addresses", fontWeight = FontWeight.Bold)
+                Text(
+                    "Generate a separate mailbox for each logging source (ProLOG, CI, a logger, ...). " +
+                        "Give that UUID to the source; PagerAPP polls all of them and notifies the same way.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+                Text("Main", fontWeight = FontWeight.Bold)
+                Text(
+                    store.uuid ?: "(creating…)",
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                )
+                Row {
+                    TextButton(
+                        enabled = !store.uuid.isNullOrBlank(),
+                        onClick = {
+                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            cm.setPrimaryClip(ClipData.newPlainText("PagerAPP mailbox", store.uuid))
+                            status = "Main mailbox UUID copied"
+                        },
+                    ) { Text("Copy") }
+                }
+                pageMailboxes.forEach { address ->
+                    Text(address.name, fontWeight = FontWeight.Bold)
+                    Text(
+                        address.uuid,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                    )
+                    Row {
+                        TextButton(onClick = {
+                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            cm.setPrimaryClip(ClipData.newPlainText("PagerAPP address", address.uuid))
+                            status = "${address.name} UUID copied"
+                        }) { Text("Copy") }
+                        TextButton(onClick = {
+                            store.removePageMailbox(address.id)
+                            pageMailboxes = store.pageMailboxes()
+                            status = "${address.name} removed"
+                        }) { Text("Delete") }
+                    }
+                }
+                OutlinedTextField(
+                    value = newPageName,
+                    onValueChange = { newPageName = it },
+                    label = { Text("name (e.g. ProLOG, CI)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Button(
+                    enabled = !generatingPage,
+                    onClick = {
+                        generatingPage = true
+                        scope.launch {
+                            val created = withContext(Dispatchers.IO) {
+                                runCatching { PagerClient.createMailbox(store.serverUrl) }.getOrNull()
+                            }
+                            if (created != null) {
+                                store.addPageMailbox(
+                                    newPageName.trim().ifBlank { "Page address ${pageMailboxes.size + 1}" },
+                                    created,
+                                    store.serverUrl,
+                                )
+                                pageMailboxes = store.pageMailboxes()
+                                newPageName = ""
+                                status = "Page address generated"
+                                if (store.fcmEnabled) {
+                                    withContext(Dispatchers.IO) {
+                                        runCatching { PushManager.reconcileFcm(context, force = true) }
+                                    }
+                                }
+                            } else {
+                                status = "Could not create a mailbox"
+                            }
+                            generatingPage = false
+                        }
+                    },
+                ) { Text(if (generatingPage) "Generating…" else "Generate address") }
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("About", fontWeight = FontWeight.Bold)
                 Text(
                     "PagerAPP keeps nothing on a server and logs nothing. It only talks to the " +
@@ -485,11 +807,63 @@ fun SettingsScreen(
                 }
             }
         }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Defaults", fontWeight = FontWeight.Bold)
+                Text(
+                    "Puts every setting back: rules and active hours, theme, poll interval, delivery " +
+                        "mode, on-call/silence, key size and lifetime, and the push settings — including " +
+                        "the registrations on the server. Your mailbox, its server, your keys, contacts " +
+                        "and history are left alone.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+                TextButton(onClick = { confirmReset = true }) { Text("Reset settings to defaults") }
+            }
+        }
     }
 
     if (showAbout) {
         AboutDialog(store = store, onDismiss = { showAbout = false })
     }
+
+    if (confirmReset) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmReset = false },
+            title = { Text("Reset to defaults?") },
+            text = {
+                Text(
+                    "Rules, active hours, theme, poll interval, delivery mode, on-call and silence, " +
+                        "key size and lifetime and the push settings go back to their factory values, " +
+                        "and the old push registrations are removed from the server. Your mailbox, " +
+                        "server, keys, contacts and history are kept.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmReset = false
+                    store.resetSettings()
+                    // The server cleanup runs on its own thread, not in a coroutine tied to this
+                    // screen: the screen is recreated right after, which would cancel it before it
+                    // could reach the server (that is exactly what went wrong the first time).
+                    val app = context.applicationContext
+                    Thread({ runCatching { PushManager.forget(app) } }, "pagerapp-reset").start()
+                    onServiceChanged(true)
+                    (context as? android.app.Activity)?.recreate()
+                }) { Text("Reset") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmReset = false }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+/** The mailbox's server-side state, or null when it cannot be read right now. */
+private fun fetchMailboxStatus(store: Store): MailboxStatus? {
+    val uuid = store.uuid ?: return null
+    return runCatching { PagerClient.mailboxStatus(store.serverUrl, uuid) }.getOrNull()
 }
 
 @Composable
@@ -503,6 +877,3 @@ private fun ToggleRow(label: String, checked: Boolean, onCheckedChange: (Boolean
         Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
-
-private fun parseTime(value: String): java.time.LocalTime? =
-    runCatching { java.time.LocalTime.parse(value.trim()) }.getOrNull()

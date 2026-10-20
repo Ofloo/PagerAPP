@@ -110,22 +110,28 @@ final class Store {
 struct HistoryEntry: Codable, Identifiable {
     let id: String
     let status: Int
+    let prio: String?
     let jobId: String?
     let project: String?
     let message: String?
     let createdAt: Double
     let ackUuid: String?
+    let replyUuid: String?
+    let ackToken: String?
     let delivered: Bool
 
     static func from(_ page: Page, delivered: Bool) -> HistoryEntry {
         HistoryEntry(
             id: page.id,
             status: page.status,
+            prio: page.prio,
             jobId: page.jobId,
             project: page.project,
             message: page.message,
             createdAt: Date().timeIntervalSince1970,
             ackUuid: page.ackUuid,
+            replyUuid: page.replyUuid,
+            ackToken: page.ackToken,
             delivered: delivered
         )
     }
