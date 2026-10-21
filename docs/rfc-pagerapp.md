@@ -10,7 +10,8 @@ client needs it.
 **Roles.** ProLOG is a product that can optionally send pages through PagerMCP. PagerMCP is the
 generic mailbox relay. PagerAPP is a client extension on top of PagerMCP for system alarms and
 chat; it supports the ProLOG page profile as an optional compatibility path, but neither PagerMCP
-nor PagerAPP requires ProLOG.
+nor PagerAPP requires ProLOG. The components are designed to complement one another, while each
+one remains generic and independently usable.
 
 Page semantics — the level table and the exact fields that request an acknowledgement versus a
 plain page — are defined in [RFC-PagerAPP-0002](rfc-pages.md), which is authoritative for §3 and §6

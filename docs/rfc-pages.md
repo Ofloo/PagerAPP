@@ -10,7 +10,8 @@ client structures are in [RFC-PagerAPP-0001](rfc-pagerapp.md).
 Roles: **ProLOG** is a product that can optionally send pages through PagerMCP; **PagerMCP** is
 the generic mailbox relay; **PagerAPP** is a client extension on top of PagerMCP used for system
 alarms and chat. PagerMCP and PagerAPP work independently of ProLOG. Supporting the ProLOG profile
-below is an optional compatibility path, not a dependency.
+below is an optional compatibility path, not a dependency. The three are designed to complement
+one another, but each remains generic and usable on its own.
 
 Two sender profiles are defined:
 
