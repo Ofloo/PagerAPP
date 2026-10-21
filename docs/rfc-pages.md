@@ -7,15 +7,6 @@ sender must include to request an acknowledgement or to send a plain message tha
 acknowledgement. It is the authoritative description of page semantics for PagerAPP; the general
 client structures are in [RFC-PagerAPP-0001](rfc-pagerapp.md).
 
-Roles: **PagerMCP** is the generic mailbox relay, originally built as the pager for OpenCode/AI
-agents; it is usable by any producer or consumer, including cron jobs and other systems.
-**PagerAPP** is the human-facing client extension on top of PagerMCP for system alarms and chat,
-and therefore depends on PagerMCP. **ProLOG** is a PLC alarm logger that can optionally use
-PagerMCP to page when an alarm occurs; it does not depend on PagerMCP. PagerAPP is not limited to
-ProLOG pages. The dependency direction is PagerAPP → PagerMCP and, optionally,
-ProLOG → PagerMCP; PagerMCP depends on neither. Supporting the ProLOG profile below is an optional
-compatibility path, not a dependency.
-
 Two sender profiles are defined:
 
 - **Native PagerAPP profile** — numeric `status`, optional urgency in `prio`, native ACK through
