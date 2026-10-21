@@ -637,7 +637,7 @@ private fun PageDetailDialog(
                 entry.prio?.let { KeyValue("level", it) }
                 entry.fromName?.let { KeyValue("from", it) }
                 if (!entry.ackUuid.isNullOrBlank()) KeyValue("ack to", entry.ackUuid)
-                if (!entry.replyUuid.isNullOrBlank()) KeyValue("ack via ProLOG", entry.replyUuid)
+                if (!entry.replyUuid.isNullOrBlank()) KeyValue("ack via reply mailbox", entry.replyUuid)
                 if (entry.acked) {
                     Spacer(Modifier.height(8.dp))
                     Text(tr("Already acknowledged"), color = MaterialTheme.colorScheme.primary)

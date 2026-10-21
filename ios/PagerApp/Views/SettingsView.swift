@@ -86,7 +86,7 @@ struct SettingsView: View {
                         }
                     }
 
-                    TextField("name (e.g. ProLOG, CI)", text: $newAddressName)
+                    TextField("name (e.g. CI, logger)", text: $newAddressName)
                     Button(generating ? "Generating…" : "Generate address") {
                         Task { await generateAddress() }
                     }

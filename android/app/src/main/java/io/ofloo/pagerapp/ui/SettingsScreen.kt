@@ -805,7 +805,7 @@ fun SettingsScreen(
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(tr("Page addresses"), fontWeight = FontWeight.Bold)
                 Text(
-                    "Generate a separate mailbox for each logging source (ProLOG, CI, a logger, ...). " +
+                    "Generate a separate mailbox for each logging source (CI, a logger, ...). " +
                         "Give that UUID to the source; PagerAPP polls all of them and notifies the same way.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.labelSmall,
@@ -849,7 +849,7 @@ fun SettingsScreen(
                 OutlinedTextField(
                     value = newPageName,
                     onValueChange = { newPageName = it },
-                    label = { Text(tr("name (e.g. ProLOG, CI)")) },
+                    label = { Text(tr("name (e.g. CI, logger)")) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )

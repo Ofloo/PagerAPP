@@ -92,7 +92,7 @@ fun RulesScreen(store: Store) {
             val rule = config.statusRules[status] ?: defaultRuleFor(status)
             RuleCard(
                 title = "${index + 1} · ${levelTitle(level)}",
-                subtitle = "status $status · ProLOG level",
+                subtitle = "status $status · urgency level",
                 rule = rule,
                 generalWindows = config.activeWindows,
                 onChange = { update(status, it) },

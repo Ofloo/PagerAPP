@@ -28,8 +28,8 @@ android {
         applicationId = "io.ofloo.pagerapp"
         minSdk = 26
         targetSdk = 36
-        versionCode = 109
-        versionName = "0.1.109"
+        versionCode = 110
+        versionName = "0.1.110"
     }
 
     signingConfigs {

@@ -923,7 +923,7 @@ private fun MessageInfoDialog(
                 entry.jobId?.let { InfoRow("job", it) }
                 entry.project?.let { InfoRow("project", it) }
                 entry.ackUuid?.let { InfoRow("ack to", it) }
-                entry.replyUuid?.let { InfoRow("ack via ProLOG", it) }
+                entry.replyUuid?.let { InfoRow("ack via reply mailbox", it) }
                 entry.fileName?.let { InfoRow("file name", it) }
                 entry.fileMime?.let { InfoRow("file type", it) }
                 entry.filePath?.let { InfoRow("file path", it) }
