@@ -39,7 +39,7 @@ internal fun WindowListEditor(
                             onChange(updated)
                         }
                     },
-                    label = { Text("start") },
+                    label = { Text(tr("start")) },
                     singleLine = true,
                     modifier = Modifier.weight(1f),
                 )
@@ -52,14 +52,14 @@ internal fun WindowListEditor(
                             onChange(updated)
                         }
                     },
-                    label = { Text("end") },
+                    label = { Text(tr("end")) },
                     singleLine = true,
                     modifier = Modifier.weight(1f),
                 )
                 TextButton(
                     enabled = windows.size > minWindows,
                     onClick = { onChange(windows.filterIndexed { i, _ -> i != index }) },
-                ) { Text("Remove") }
+                ) { Text(tr("Remove")) }
             }
         }
         if (windows.isEmpty()) {

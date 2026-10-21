@@ -2,21 +2,28 @@ import SwiftUI
 
 @main
 struct PagerApp: App {
-    @StateObject private var poller = Poller()
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @StateObject private var poller = Poller.shared
+    @StateObject private var router = AppRouter.shared
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(poller)
+                .environmentObject(router)
                 .task {
-                    Notifier.registerCategories()
                     await Notifier.requestAuthorization()
                     poller.start()
                 }
         }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active { poller.start() } else { poller.stop() }
+        .onChange(of: scenePhase) { phase in
+            if phase == .active {
+                poller.start()
+            } else {
+                poller.stop()
+                BackgroundRefresh.schedule()
+            }
         }
     }
 }

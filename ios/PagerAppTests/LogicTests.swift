@@ -65,4 +65,36 @@ final class LogicTests: XCTestCase {
         XCTAssertEqual(page.status, 2)
         XCTAssertEqual(page.project, "build")
     }
+
+    func testPageParserKeepsServerTimeAndChatFields() throws {
+        let page = try PageParser.parse([
+            "id": "m2",
+            "status": 10,
+            "created_at": 1_700_000_000.5,
+            "age_seconds": 12,
+            "from": "peer-1",
+            "from_name": "Peer",
+            "mid": "out-1",
+            "read": "out-0",
+        ])
+        XCTAssertEqual(page.createdAt ?? -1, 1_700_000_000.5)
+        XCTAssertEqual(page.ageSeconds ?? -1, 12)
+        XCTAssertEqual(page.from, "peer-1")
+        XCTAssertEqual(page.mid, "out-1")
+        XCTAssertEqual(page.read, "out-0")
+    }
+
+    func testHistoryUsesServerTimestampAndMailbox() throws {
+        let page = try PageParser.parse(["id": "m3", "status": 3, "created_at": 123.0])
+        let entry = HistoryEntry.from(
+            page,
+            delivered: true,
+            mailbox: "mailbox",
+            serverUrl: "https://example.test"
+        )
+        XCTAssertEqual(entry.createdAt, 123.0)
+        XCTAssertNotNil(entry.receivedAt)
+        XCTAssertEqual(entry.mailbox, "mailbox")
+        XCTAssertFalse(entry.acked)
+    }
 }

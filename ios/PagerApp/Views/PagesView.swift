@@ -1,60 +1,65 @@
 import SwiftUI
 
 struct PagesView: View {
+    @EnvironmentObject private var poller: Poller
     @State private var entries: [HistoryEntry] = []
 
     var body: some View {
         NavigationStack {
-            List(entries) { entry in
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(entry.jobId ?? entry.project ?? "page").bold()
-                        Spacer()
-                        Text(statusLabel(entry.status, entry.prio))
-                            .foregroundStyle(statusColor(entry.status))
+            List {
+                if entries.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "bell.slash")
+                            .font(.largeTitle)
+                            .foregroundStyle(.secondary)
+                        Text("No pages yet").bold()
+                        Text("Pages fetched from PagerMCP will appear here.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    Text(entry.message ?? "(no message)")
-                    Text(subtitle(entry))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 32)
+                }
+                ForEach(entries) { entry in
+                    NavigationLink {
+                        PageDetailView(entry: entry)
+                    } label: {
+                        row(entry)
+                    }
                 }
             }
             .navigationTitle("Pages")
-            .onAppear { entries = Store.shared.history() }
+            .refreshable { await poller.refreshOnce() }
+            .onAppear(perform: reload)
+            .onChange(of: poller.revision) { _ in reload() }
         }
     }
 
-    private func subtitle(_ entry: HistoryEntry) -> String {
-        var parts = ["status \(entry.status)"]
-        if !(entry.ackUuid ?? "").isEmpty || !(entry.replyUuid ?? "").isEmpty {
-            parts.append("ACK available")
-        }
-        if !entry.delivered { parts.append("not notified") }
-        return parts.joined(separator: " · ")
-    }
-
-    private func statusLabel(_ status: Int, _ prio: String?) -> String {
-        if let level = prio?.lowercased(),
-           ["debug", "info", "warning", "alarm", "critical"].contains(level) {
-            return "\(status) \(level.capitalized)"
-        }
-        switch status {
-        case 0: return "0 Success"
-        case 1: return "1 Warning"
-        case 2: return "2 Failed"
-        case 3: return "3 Critical"
-        case 4: return "4 In Progress"
-        case 5: return "5 Queued"
-        case 6: return "6 Acknowledged"
-        default: return "\(status)"
+    @ViewBuilder
+    private func row(_ entry: HistoryEntry) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(entry.jobId ?? entry.project ?? "page").bold()
+                Spacer()
+                Text(pageStatusLabel(entry.status, entry.prio))
+                    .foregroundStyle(pageStatusColor(entry.status))
+            }
+            Text(entry.message ?? "(no message)")
+                .lineLimit(2)
+            HStack {
+                Text(pageDate(entry.createdAt))
+                if !entry.delivered { Text("· history") }
+                if entry.acked { Text("· acknowledged") }
+                if !(entry.ackUuid ?? "").isEmpty || !(entry.replyUuid ?? "").isEmpty {
+                    Text("· ACK available")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
     }
 
-    private func statusColor(_ status: Int) -> Color {
-        switch status {
-        case 2, 3: return .red
-        case 6: return .blue
-        default: return .secondary
-        }
+    private func reload() {
+        entries = Store.shared.history()
     }
 }

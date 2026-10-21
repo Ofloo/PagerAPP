@@ -64,7 +64,7 @@ fun AboutDialog(store: Store, onDismiss: () -> Unit) {
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("About PagerAPP") },
+        title = { Text(tr("About PagerAPP")) },
         text = {
             Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 RowInfo("app", "${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})")
@@ -90,17 +90,17 @@ fun AboutDialog(store: Store, onDismiss: () -> Unit) {
                 RowInfo("theme", store.themeMode.name.lowercase())
                 Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = { scope.launch { load() } }) { Text("Check again") }
+                    TextButton(onClick = { scope.launch { load() } }) { Text(tr("Check again")) }
                     TextButton(onClick = { uriHandler.openUri(AppLinks.PRIVACY_POLICY) }) {
-                        Text("Privacy")
+                        Text(tr("Privacy"))
                     }
                     TextButton(onClick = { uriHandler.openUri("${store.serverUrl}/rfc") }) {
-                        Text("Protocol")
+                        Text(tr("Protocol"))
                     }
                 }
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(tr("Close")) } },
     )
 }
 

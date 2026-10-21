@@ -43,6 +43,7 @@ class MainActivity : ComponentActivity() {
         requestNotificationPermission()
 
         store = Store(this)
+        Translations.setLanguage(store.appLanguage)
         consumeNfcIntent(intent)
         consumePageIntent(intent)
         consumeShareIntent(intent)

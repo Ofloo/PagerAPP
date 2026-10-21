@@ -130,7 +130,7 @@ fun RulesScreen(store: Store) {
                 androidx.compose.material3.OutlinedTextField(
                     value = customInput,
                     onValueChange = { customInput = it.filter(Char::isDigit).take(2) },
-                    label = { Text("code") },
+                    label = { Text(tr("code")) },
                     singleLine = true,
                     modifier = Modifier.width(120.dp),
                 )
@@ -143,7 +143,7 @@ fun RulesScreen(store: Store) {
                         store.config = config
                         customInput = ""
                     },
-                ) { Text("Add") }
+                ) { Text(tr("Add")) }
             }
         }
     }
@@ -238,10 +238,10 @@ private fun RuleCard(
                 if (onMoveUp != null || onMoveDown != null) {
                     Row {
                         TextButton(enabled = onMoveUp != null, onClick = { onMoveUp?.invoke() }) {
-                            Text("Up")
+                            Text(tr("Up"))
                         }
                         TextButton(enabled = onMoveDown != null, onClick = { onMoveDown?.invoke() }) {
-                            Text("Down")
+                            Text(tr("Down"))
                         }
                     }
                 }
@@ -314,7 +314,7 @@ private fun RuleCard(
             )
             if (scheduleOf(rule) == ScheduleChoice.CUSTOM) {
                 Spacer(Modifier.height(8.dp))
-                Text("Custom hours for $title", fontWeight = FontWeight.Bold)
+                Text(tr("Custom hours for $title"), fontWeight = FontWeight.Bold)
                 WindowListEditor(
                     windows = rule.customWindows,
                     onChange = { onChange(rule.copy(customWindows = it)) },

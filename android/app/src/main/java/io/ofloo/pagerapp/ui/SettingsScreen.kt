@@ -1,6 +1,8 @@
 package io.ofloo.pagerapp.ui
 
 import android.content.ClipData
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
@@ -71,10 +73,12 @@ fun SettingsScreen(
     var server by remember { mutableStateOf(store.serverUrl) }
     var config by remember { mutableStateOf(store.config) }
     var theme by remember { mutableStateOf(store.themeMode) }
+    var language by remember { mutableStateOf(store.appLanguage) }
     var reliable by remember { mutableStateOf(store.reliableDelivery) }
     var alarmPolling by remember { mutableStateOf(store.alarmPolling) }
     var showAbout by remember { mutableStateOf(false) }
     var restore by remember { mutableStateOf("") }
+    var pendingBackup by remember { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf<String?>(null) }
     var alternate by remember { mutableStateOf(store.alternateServer) }
     var checking by remember { mutableStateOf(false) }
@@ -97,6 +101,44 @@ fun SettingsScreen(
     val uriHandler = LocalUriHandler.current
     val context = LocalContext.current
 
+    val exportBackup = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json"),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val text = store.exportBackup()
+                    context.contentResolver.openOutputStream(uri)?.use {
+                        it.write(text.toByteArray(Charsets.UTF_8))
+                    } ?: error("could not open the selected file")
+                }
+            }
+            status = result.fold(
+                onSuccess = { "Backup exported" },
+                onFailure = { "Backup failed: ${it.message ?: "unknown error"}" },
+            )
+        }
+    }
+
+    val importBackup = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                        ?: error("could not open the selected file")
+                }
+            }
+            result.fold(
+                onSuccess = { pendingBackup = it },
+                onFailure = { status = "Import failed: ${it.message ?: "unknown error"}" },
+            )
+        }
+    }
+
     LaunchedEffect(Unit) {
         pushStatus = withContext(Dispatchers.IO) { fetchMailboxStatus(store) }
     }
@@ -113,7 +155,7 @@ fun SettingsScreen(
         // Bypass / Silence: mutually exclusive quick toggles.
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("On-call", fontWeight = FontWeight.Bold)
+                Text(tr("On-call"), fontWeight = FontWeight.Bold)
                 ToggleRow(
                     label = "Bypass (on-call: show every page)",
                     checked = bypass,
@@ -138,16 +180,16 @@ fun SettingsScreen(
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Appearance", fontWeight = FontWeight.Bold)
+                Text(tr("Appearance"), fontWeight = FontWeight.Bold)
                 Picker(
-                    label = "theme",
+                    label = tr("theme"),
                     value = theme,
                     options = ThemeMode.entries,
                     display = {
                         when (it) {
-                            ThemeMode.SYSTEM -> "follow system"
-                            ThemeMode.LIGHT -> "light"
-                            ThemeMode.DARK -> "dark"
+                            ThemeMode.SYSTEM -> tr("follow system")
+                            ThemeMode.LIGHT -> tr("light")
+                            ThemeMode.DARK -> tr("dark")
                         }
                     },
                     onSelect = {
@@ -161,7 +203,35 @@ fun SettingsScreen(
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("General schedule", fontWeight = FontWeight.Bold)
+                Text(tr("Language"), fontWeight = FontWeight.Bold)
+                Picker(
+                    label = "language",
+                    value = language,
+                    options = listOf("system", "en", "nl", "fr", "de", "es"),
+                    display = {
+                        when (it) {
+                            "system" -> "System"
+                            "en" -> "English"
+                            "nl" -> "Nederlands"
+                            "fr" -> "Français"
+                            "de" -> "Deutsch"
+                            "es" -> "Español"
+                            else -> it
+                        }
+                    },
+                    onSelect = {
+                        language = it
+                        store.appLanguage = it
+                        Translations.setLanguage(it)
+                        (context as? android.app.Activity)?.recreate()
+                    },
+                )
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(tr("General schedule"), fontWeight = FontWeight.Bold)
                 Text(
                     "Levels set to 'General schedule' only notify inside these windows. A level " +
                         "can instead use its own hours under Rules.",
@@ -180,16 +250,16 @@ fun SettingsScreen(
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Watch", fontWeight = FontWeight.Bold)
+                Text(tr("Watch"), fontWeight = FontWeight.Bold)
                 Picker(
-                    label = "mode",
+                    label = tr("mode"),
                     value = config.watchMode,
                     options = WatchMode.entries,
                     display = {
                         when (it) {
-                            WatchMode.OFF -> "off (phone only)"
-                            WatchMode.PHONE_AND_WATCH -> "phone + watch"
-                            WatchMode.WATCH_ONLY -> "watch only (silent)"
+                            WatchMode.OFF -> tr("off (phone only)")
+                            WatchMode.PHONE_AND_WATCH -> tr("phone + watch")
+                            WatchMode.WATCH_ONLY -> tr("watch only (silent)")
                         }
                     },
                     onSelect = {
@@ -207,7 +277,7 @@ fun SettingsScreen(
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Delivery", fontWeight = FontWeight.Bold)
+                Text(tr("Delivery"), fontWeight = FontWeight.Bold)
                 ToggleRow(
                     label = "Foreground service (fast: 30s–5min)",
                     checked = reliable,
@@ -270,7 +340,7 @@ fun SettingsScreen(
                                 Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM),
                             )
                         }
-                    }) { Text("Wekker-machtiging openen") }
+                    }) { Text(tr("Wekker-machtiging openen")) }
                 }
                 if (!reliable) {
                     Text(
@@ -289,7 +359,7 @@ fun SettingsScreen(
                             onServiceChanged(true)
                         }
                     },
-                    label = { Text("interval (seconds, 30–300)") },
+                    label = { Text(tr("interval (seconds, 30–300)")) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.fillMaxWidth(),
@@ -309,7 +379,7 @@ fun SettingsScreen(
                                     .putExtra(Settings.EXTRA_CHANNEL_ID, Notifications.CHANNEL_SERVICE),
                             )
                         }
-                    }) { Text("Hide its notification") }
+                    }) { Text(tr("Hide its notification")) }
                 }
             }
         }
@@ -318,7 +388,7 @@ fun SettingsScreen(
         // the next poll. The page itself still travels the normal, encrypted path.
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Push", fontWeight = FontWeight.Bold)
+                Text(tr("Push"), fontWeight = FontWeight.Bold)
                 // If Android does not let us notify, every wake-up is wasted: the page arrives but
                 // the user never learns about it. Say so, with a way to fix it.
                 if (!androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled()) {
@@ -335,7 +405,7 @@ fun SettingsScreen(
                                     .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName),
                             )
                         }
-                    }) { Text("Meldingen aanzetten") }
+                    }) { Text(tr("Meldingen aanzetten")) }
                 }
                 ToggleRow(
                     label = "Server push (SSE/UnifiedPush)",
@@ -439,14 +509,14 @@ fun SettingsScreen(
                                     }.getOrNull()
                                 }
                             }
-                        }) { Text("Renew now") }
+                        }) { Text(tr("Renew now")) }
                         TextButton(onClick = {
                             scope.launch {
                                 pushStatus = withContext(Dispatchers.IO) {
                                     runCatching { fetchMailboxStatus(store) }.getOrNull()
                                 }
                             }
-                        }) { Text("Refresh") }
+                        }) { Text(tr("Refresh")) }
                     }
                     if (store.pushChannel.isNotBlank()) {
                         Text(
@@ -461,7 +531,7 @@ fun SettingsScreen(
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Photo sharing", fontWeight = FontWeight.Bold)
+                Text(tr("Photo sharing"), fontWeight = FontWeight.Bold)
                 Text(
                     "Photos are GPG-encrypted and uploaded to this transfer.sh-compatible host. " +
                         "The encrypted link is sent in the chat; both devices should use the same " +
@@ -472,7 +542,7 @@ fun SettingsScreen(
                 OutlinedTextField(
                     value = photoShare,
                     onValueChange = { photoShare = it },
-                    label = { Text("share host URL") },
+                    label = { Text(tr("share host URL")) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -486,12 +556,12 @@ fun SettingsScreen(
                             photoShare = url
                             status = "Photo share host saved"
                         }
-                    }) { Text("Save") }
+                    }) { Text(tr("Save")) }
                     TextButton(onClick = {
                         store.photoShareUrl = Store.DEFAULT_PHOTO_SHARE
                         photoShare = Store.DEFAULT_PHOTO_SHARE
                         status = "Photo share host reset"
-                    }) { Text("Default") }
+                    }) { Text(tr("Default")) }
                 }
                 val retentionLabel = shareRetention?.let { days -> "$days day(s)" } ?: "reading…"
                 Text(
@@ -504,7 +574,7 @@ fun SettingsScreen(
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Encryption", fontWeight = FontWeight.Bold)
+                Text(tr("Encryption"), fontWeight = FontWeight.Bold)
                 val fingerprint = remember(keyRevision, showAbout) { store.ownFingerprint }
                 if (fingerprint.isBlank()) {
                     Text(
@@ -534,14 +604,14 @@ fun SettingsScreen(
                     }
                 }
                 Picker(
-                    label = "key lifetime",
+                    label = tr("key lifetime"),
                     value = keyMonths,
                     options = (Pgp.MIN_EXPIRY_MONTHS..Pgp.MAX_EXPIRY_MONTHS).toList(),
                     display = { "$it months" },
                     onSelect = { keyMonths = it; store.keyExpiryMonths = it },
                 )
                 Picker(
-                    label = "key size",
+                    label = tr("key size"),
                     value = keyBits,
                     options = listOf(2048, 3072, 4096, 8192),
                     display = { "$it bits" },
@@ -592,7 +662,7 @@ fun SettingsScreen(
                     TextButton(
                         enabled = !generating,
                         onClick = { doKey({ store.renewKeys() }, "New key") },
-                    ) { Text("New key (changes your fingerprint)") }
+                    ) { Text(tr("New key (changes your fingerprint)")) }
                     Text(
                         "A new key means contacts must adopt it — the app announces it to every chat " +
                             "automatically, and can ask them to resend anything that arrived encrypted " +
@@ -612,18 +682,18 @@ fun SettingsScreen(
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Servers", fontWeight = FontWeight.Bold)
+                Text(tr("Servers"), fontWeight = FontWeight.Bold)
                 OutlinedTextField(
                     value = server,
                     onValueChange = { server = it; store.serverUrl = it },
-                    label = { Text("PagerMCP base URL") },
+                    label = { Text(tr("PagerMCP base URL")) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(
                     value = alternate,
                     onValueChange = { alternate = it; store.alternateServer = it },
-                    label = { Text("alternate server (used when the first is unreachable)") },
+                    label = { Text(tr("alternate server (used when the first is unreachable)")) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -665,7 +735,7 @@ fun SettingsScreen(
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Mailbox", fontWeight = FontWeight.Bold)
+                Text(tr("Mailbox"), fontWeight = FontWeight.Bold)
                 Text(
                     "Where your systems (CI, alerts, pager.sh) send pages. Keep this to yourself — " +
                         "contacts never see it; each chat has its own channel.",
@@ -682,15 +752,15 @@ fun SettingsScreen(
                         enabled = !store.uuid.isNullOrBlank(),
                         onClick = {
                             val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            cm.setPrimaryClip(ClipData.newPlainText("PagerAPP mailbox", store.uuid))
+                            cm.setPrimaryClip(ClipData.newPlainText(tr("PagerAPP mailbox"), store.uuid))
                             status = "Mailbox UUID copied"
                         },
-                    ) { Text("Copy UUID") }
+                    ) { Text(tr("Copy UUID")) }
                 }
                 OutlinedTextField(
                     value = restore,
                     onValueChange = { restore = it },
-                    label = { Text("restore: paste a mailbox UUID") },
+                    label = { Text(tr("restore: paste a mailbox UUID")) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -703,21 +773,44 @@ fun SettingsScreen(
                         onServiceChanged(true)
                         status = "Mailbox restored"
                     },
-                ) { Text("Restore") }
+                ) { Text(tr("Restore")) }
                 status?.let { Text(it, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp) }
             }
         }
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Page addresses", fontWeight = FontWeight.Bold)
+                Text(tr("Backup & restore"), fontWeight = FontWeight.Bold)
+                Text(
+                    "Exports settings, mailbox addresses, contacts, history and your PGP keys. " +
+                        "The file contains your mailbox bearer UUID and private key — keep it private.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            val day = SimpleDateFormat("yyyyMMdd", Locale.US).format(Date())
+                            exportBackup.launch("PagerAPP-backup-$day.json")
+                        },
+                    ) { Text(tr("Export backup")) }
+                    OutlinedButton(
+                        onClick = { importBackup.launch(arrayOf("application/json", "text/plain")) },
+                    ) { Text(tr("Import backup")) }
+                }
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(tr("Page addresses"), fontWeight = FontWeight.Bold)
                 Text(
                     "Generate a separate mailbox for each logging source (ProLOG, CI, a logger, ...). " +
                         "Give that UUID to the source; PagerAPP polls all of them and notifies the same way.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.labelSmall,
                 )
-                Text("Main", fontWeight = FontWeight.Bold)
+                Text(tr("Main"), fontWeight = FontWeight.Bold)
                 Text(
                     store.uuid ?: "(creating…)",
                     fontFamily = FontFamily.Monospace,
@@ -728,10 +821,10 @@ fun SettingsScreen(
                         enabled = !store.uuid.isNullOrBlank(),
                         onClick = {
                             val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            cm.setPrimaryClip(ClipData.newPlainText("PagerAPP mailbox", store.uuid))
+                            cm.setPrimaryClip(ClipData.newPlainText(tr("PagerAPP mailbox"), store.uuid))
                             status = "Main mailbox UUID copied"
                         },
-                    ) { Text("Copy") }
+                    ) { Text(tr("Copy")) }
                 }
                 pageMailboxes.forEach { address ->
                     Text(address.name, fontWeight = FontWeight.Bold)
@@ -743,20 +836,20 @@ fun SettingsScreen(
                     Row {
                         TextButton(onClick = {
                             val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            cm.setPrimaryClip(ClipData.newPlainText("PagerAPP address", address.uuid))
+                            cm.setPrimaryClip(ClipData.newPlainText(tr("PagerAPP address"), address.uuid))
                             status = "${address.name} UUID copied"
-                        }) { Text("Copy") }
+                        }) { Text(tr("Copy")) }
                         TextButton(onClick = {
                             store.removePageMailbox(address.id)
                             pageMailboxes = store.pageMailboxes()
                             status = "${address.name} removed"
-                        }) { Text("Delete") }
+                        }) { Text(tr("Delete")) }
                     }
                 }
                 OutlinedTextField(
                     value = newPageName,
                     onValueChange = { newPageName = it },
-                    label = { Text("name (e.g. ProLOG, CI)") },
+                    label = { Text(tr("name (e.g. ProLOG, CI)")) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -794,23 +887,23 @@ fun SettingsScreen(
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("About", fontWeight = FontWeight.Bold)
+                Text(tr("About"), fontWeight = FontWeight.Bold)
                 Text(
                     "PagerAPP keeps nothing on a server and logs nothing. It only talks to the " +
                         "PagerMCP server you set above.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.labelSmall,
                 )
-                TextButton(onClick = { showAbout = true }) { Text("About PagerAPP") }
+                TextButton(onClick = { showAbout = true }) { Text(tr("About PagerAPP")) }
                 TextButton(onClick = { uriHandler.openUri(AppLinks.PRIVACY_POLICY) }) {
-                    Text("Privacy policy")
+                    Text(tr("Privacy policy"))
                 }
             }
         }
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Defaults", fontWeight = FontWeight.Bold)
+                Text(tr("Defaults"), fontWeight = FontWeight.Bold)
                 Text(
                     "Puts every setting back: rules and active hours, theme, poll interval, delivery " +
                         "mode, on-call/silence, key size and lifetime, and the push settings — including " +
@@ -819,9 +912,56 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.labelSmall,
                 )
-                TextButton(onClick = { confirmReset = true }) { Text("Reset settings to defaults") }
+                TextButton(onClick = { confirmReset = true }) { Text(tr("Reset settings to defaults")) }
             }
         }
+    }
+
+    pendingBackup?.let { backup ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { pendingBackup = null },
+            title = { Text(tr("Restore this backup?")) },
+            text = {
+                Text(
+                    "This overwrites the current settings, mailbox addresses, contacts, history " +
+                        "and PGP keys on this device. Push registrations will be renewed for this " +
+                        "device.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val result = store.importBackup(backup)
+                    pendingBackup = null
+                    result.fold(
+                        onSuccess = {
+                            bypass = store.bypassMode
+                            silence = store.silenceMode
+                            poll = store.pollSeconds.toString()
+                            server = store.serverUrl
+                            config = store.config
+                            theme = store.themeMode
+                            language = store.appLanguage
+                            Translations.setLanguage(store.appLanguage)
+                            reliable = store.reliableDelivery
+                            alarmPolling = store.alarmPolling
+                            alternate = store.alternateServer
+                            keyMonths = store.keyExpiryMonths
+                            keyBits = store.keyBits
+                            pushOn = store.pushEnabled
+                            fcmOn = store.fcmEnabled
+                            pageMailboxes = store.pageMailboxes()
+                            onThemeChanged(theme)
+                            onServiceChanged(true)
+                            status = "Backup restored"
+                        },
+                        onFailure = { status = "Restore failed: ${it.message ?: "invalid backup"}" },
+                    )
+                }) { Text(tr("Restore")) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingBackup = null }) { Text(tr("Cancel")) }
+            },
+        )
     }
 
     if (showAbout) {
@@ -831,7 +971,7 @@ fun SettingsScreen(
     if (confirmReset) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { confirmReset = false },
-            title = { Text("Reset to defaults?") },
+            title = { Text(tr("Reset to defaults?")) },
             text = {
                 Text(
                     "Rules, active hours, theme, poll interval, delivery mode, on-call and silence, " +
@@ -851,10 +991,10 @@ fun SettingsScreen(
                     Thread({ runCatching { PushManager.forget(app) } }, "pagerapp-reset").start()
                     onServiceChanged(true)
                     (context as? android.app.Activity)?.recreate()
-                }) { Text("Reset") }
+                }) { Text(tr("Reset")) }
             },
             dismissButton = {
-                TextButton(onClick = { confirmReset = false }) { Text("Cancel") }
+                TextButton(onClick = { confirmReset = false }) { Text(tr("Cancel")) }
             },
         )
     }

@@ -19,12 +19,18 @@ targets:
         UILaunchScreen: {}
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
+        BGTaskSchedulerPermittedIdentifiers:
+          - io.ofloo.pagerapp.refresh
+        UIBackgroundModes:
+          - fetch
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.ofloo.pagerapp
-        MARKETING_VERSION: "0.1.0"
-        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "0.1.105"
+        CURRENT_PROJECT_VERSION: "105"
         GENERATE_INFOPLIST_FILE: NO
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
 
   PagerAppTests:
     type: bundle.unit-test

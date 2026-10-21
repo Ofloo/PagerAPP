@@ -166,11 +166,11 @@ fun ContactsScreen(store: Store, onOpenChat: (Contact) -> Unit) {
         item {
             Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("You", fontWeight = FontWeight.Bold)
+                    Text(tr("You"), fontWeight = FontWeight.Bold)
                     OutlinedTextField(
                         value = name,
                         onValueChange = { name = it; store.displayName = it },
-                        label = { Text("your name (shown to contacts)") },
+                        label = { Text(tr("your name (shown to contacts)")) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -209,7 +209,7 @@ fun ContactsScreen(store: Store, onOpenChat: (Contact) -> Unit) {
                                 }
                             },
                         ) { Text(if (busy) "Creating…" else "Invite a contact") }
-                        OutlinedButton(onClick = { scanner() }, enabled = !busy) { Text("Scan contact") }
+                        OutlinedButton(onClick = { scanner() }, enabled = !busy) { Text(tr("Scan contact")) }
                     }
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -218,7 +218,7 @@ fun ContactsScreen(store: Store, onOpenChat: (Contact) -> Unit) {
                         OutlinedButton(
                             onClick = { startNfc(NfcMode.READ) },
                             enabled = !busy && nfcMode == NfcMode.NONE,
-                        ) { Text("Scan NFC tag") }
+                        ) { Text(tr("Scan NFC tag")) }
                         if (nfcMode != NfcMode.NONE) {
                             Text(
                                 if (nfcMode == NfcMode.READ) "Hold a tag to the phone…"
@@ -237,7 +237,7 @@ fun ContactsScreen(store: Store, onOpenChat: (Contact) -> Unit) {
                     OutlinedTextField(
                         value = pastedInvite,
                         onValueChange = { pastedInvite = it },
-                        label = { Text("or paste an invitation") },
+                        label = { Text(tr("or paste an invitation")) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -247,13 +247,13 @@ fun ContactsScreen(store: Store, onOpenChat: (Contact) -> Unit) {
                             addFromPayload(pastedInvite.trim(), UUID.randomUUID().toString())
                             pastedInvite = ""
                         },
-                    ) { Text("Add pasted invitation") }
+                    ) { Text(tr("Add pasted invitation")) }
                 }
             }
         }
 
         item { Spacer(Modifier.height(8.dp)) }
-        item { Text("Contacts", fontWeight = FontWeight.Bold) }
+        item { Text(tr("Contacts"), fontWeight = FontWeight.Bold) }
         item { Spacer(Modifier.height(4.dp)) }
 
         if (contacts.isEmpty()) {
@@ -321,18 +321,18 @@ fun ContactsScreen(store: Store, onOpenChat: (Contact) -> Unit) {
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (contact.kind == ContactKind.PERSON) {
-                            Button(onClick = { onOpenChat(contact) }) { Text("Open chat") }
+                            Button(onClick = { onOpenChat(contact) }) { Text(tr("Open chat")) }
                         } else {
-                            Button(onClick = { sendTo = contact }) { Text("Send") }
+                            Button(onClick = { sendTo = contact }) { Text(tr("Send")) }
                         }
-                        TextButton(onClick = { renameTarget = contact }) { Text("Rename") }
+                        TextButton(onClick = { renameTarget = contact }) { Text(tr("Rename")) }
                         TextButton(onClick = {
                             val app = context.applicationContext
                             Thread({ PushManager.removeFcmTarget(app, contact.serverUrl, contact.inbox) }, "pagerapp-fcm-remove").start()
                             store.removeContact(contact.id)
                             refresh()
                         }) {
-                            Text("Delete")
+                            Text(tr("Delete"))
                         }
                     }
                     if (contact.kind == ContactKind.SYSTEM) {
@@ -357,14 +357,14 @@ fun ContactsScreen(store: Store, onOpenChat: (Contact) -> Unit) {
     inviteQr?.let { payload ->
         AlertDialog(
             onDismissRequest = { inviteQr = null },
-            confirmButton = { TextButton(onClick = { inviteQr = null }) { Text("Close") } },
+            confirmButton = { TextButton(onClick = { inviteQr = null }) { Text(tr("Close")) } },
             dismissButton = {
                 TextButton(onClick = {
                     inviteQr = null
                     startNfc(NfcMode.WRITE, payload)
-                }) { Text("Write to NFC tag") }
+                }) { Text(tr("Write to NFC tag")) }
             },
-            title = { Text("Let them scan this") },
+            title = { Text(tr("Let them scan this")) },
             text = {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Image(bitmap = qrBitmap(payload), contentDescription = "Contact QR code")
@@ -417,12 +417,12 @@ fun ContactsScreen(store: Store, onOpenChat: (Contact) -> Unit) {
         var newName by remember(contact.id) { mutableStateOf(contact.name) }
         AlertDialog(
             onDismissRequest = { renameTarget = null },
-            title = { Text("Rename contact") },
+            title = { Text(tr("Rename contact")) },
             text = {
                 OutlinedTextField(
                     value = newName,
                     onValueChange = { newName = it },
-                    label = { Text("name") },
+                    label = { Text(tr("name")) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -432,9 +432,9 @@ fun ContactsScreen(store: Store, onOpenChat: (Contact) -> Unit) {
                     store.upsertContact(contact.copy(name = newName.trim()))
                     renameTarget = null
                     refresh()
-                }) { Text("Save") }
+                }) { Text(tr("Save")) }
             },
-            dismissButton = { TextButton(onClick = { renameTarget = null }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { renameTarget = null }) { Text(tr("Cancel")) } },
         )
     }
 }
@@ -444,18 +444,18 @@ private fun SendDialog(contact: Contact, onDismiss: () -> Unit, onSend: (String)
     var text by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Send to ${contact.name.ifBlank { contact.uuid.take(8) }}") },
+        title = { Text(tr("Send to ${contact.name.ifBlank { contact.uuid.take(8) }}")) },
         text = {
             OutlinedTextField(
                 value = text,
                 onValueChange = { text = it },
-                label = { Text("message") },
+                label = { Text(tr("message")) },
                 modifier = Modifier.fillMaxWidth(),
             )
         },
         confirmButton = {
-            TextButton(enabled = text.isNotBlank(), onClick = { onSend(text.trim()) }) { Text("Send") }
+            TextButton(enabled = text.isNotBlank(), onClick = { onSend(text.trim()) }) { Text(tr("Send")) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(tr("Cancel")) } },
     )
 }

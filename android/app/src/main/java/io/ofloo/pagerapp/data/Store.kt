@@ -51,6 +51,11 @@ class Store(context: Context) {
         get() = prefs.getString(KEY_NAME, "")!!
         set(v) = prefs.edit().putString(KEY_NAME, v).apply()
 
+    /** UI language: "system" or one of en/nl/fr/de/es. */
+    var appLanguage: String
+        get() = prefs.getString(KEY_LANGUAGE, "system")!!
+        set(v) = prefs.edit().putString(KEY_LANGUAGE, v).apply()
+
     /** Colour-scheme preference; defaults to following the OS. */
     var themeMode: ThemeMode
         get() = runCatching { ThemeMode.valueOf(prefs.getString(KEY_THEME, null)!!) }
@@ -566,6 +571,77 @@ class Store(context: Context) {
         rewriteHistory { if (it.id == id) null else it }
     }
 
+    /** Clears a whole conversation's local history for the two sender identities. */
+    fun deleteThread(senderId: String, mySenderId: String) {
+        rewriteHistory { entry ->
+            val theirs = senderId.isNotBlank() && entry.from == senderId
+            val mine = mySenderId.isNotBlank() && entry.from == mySenderId
+            if (theirs || mine) null else entry
+        }
+    }
+
+    /**
+     * A portable snapshot of the user-visible state. It deliberately excludes device-bound push
+     * leases and FCM tokens. The file contains the mailbox bearer UUID and the OpenPGP private key,
+     * so the UI must warn the user to keep it private.
+     */
+    fun exportBackup(): String {
+        val json = JSONObject()
+        json.put("format", BACKUP_FORMAT)
+        json.put("version", BACKUP_VERSION)
+        json.put("created_at", System.currentTimeMillis())
+        val data = JSONObject()
+        for (key in BACKUP_KEYS) {
+            if (!prefs.contains(key)) continue
+            when (val value = prefs.all[key]) {
+                is String -> data.put(key, value)
+                is Int -> data.put(key, value)
+                is Long -> data.put(key, value)
+                is Boolean -> data.put(key, value)
+                is Float -> data.put(key, value.toDouble())
+                is Set<*> -> data.put(key, JSONArray(value.toList()))
+            }
+        }
+        json.put("data", data)
+        return json.toString(2)
+    }
+
+    /** Replaces the portable state from [exportBackup]. Device push/FCM state is reset. */
+    fun importBackup(text: String): Result<Unit> = runCatching {
+        val root = JSONObject(text)
+        require(root.optString("format") == BACKUP_FORMAT) { "Not a PagerAPP backup" }
+        require(root.optInt("version", 0) == BACKUP_VERSION) { "Unsupported backup version" }
+        val data = root.optJSONObject("data") ?: error("Backup has no data")
+
+        val edit = prefs.edit()
+        for (key in BACKUP_KEYS) edit.remove(key)
+        // These belong to this installation, not to the backup.
+        edit.remove(KEY_PUSH_ID)
+        edit.remove(KEY_PUSH_EXPIRES)
+        edit.remove(KEY_PUSH_ENDPOINT)
+        edit.remove(KEY_FCM_TOKEN)
+        edit.remove(KEY_FCM_LEASES)
+        edit.remove(KEY_FCM_CHECKED)
+        edit.remove(KEY_PENDING_CONTACT)
+
+        for (key in BACKUP_KEYS) {
+            if (!data.has(key)) continue
+            when (val value = data.get(key)) {
+                is String -> edit.putString(key, value)
+                is Int -> edit.putInt(key, value)
+                is Long -> edit.putLong(key, value)
+                is Boolean -> edit.putBoolean(key, value)
+                is Double -> edit.putFloat(key, value.toFloat())
+                is JSONArray -> {
+                    val values = (0 until value.length()).map { value.optString(it) }.toSet()
+                    edit.putStringSet(key, values)
+                }
+                else -> Unit
+            }
+        }
+        check(edit.commit()) { "Could not write the restored settings" }
+    }
+
     private fun rewriteHistory(transform: (HistoryEntry) -> HistoryEntry?) {
         val arr = JSONArray()
         history().mapNotNull(transform).forEach { arr.put(it.toJson()) }
@@ -585,6 +661,7 @@ class Store(context: Context) {
         private const val KEY_UUID = "pager_uuid"
         private const val KEY_NAME = "display_name"
         private const val KEY_THEME = "theme_mode"
+        private const val KEY_LANGUAGE = "app_language"
         private const val KEY_PENDING_CONTACT = "pending_contact"
         private const val KEY_PUB = "pgp_public"
         private const val KEY_SEC = "pgp_secret"
@@ -616,6 +693,15 @@ class Store(context: Context) {
         private const val KEY_ALARM = "alarm_polling"
         private const val KEY_SEEN = "seen_ids"
         private const val KEY_HISTORY = "history"
+
+        private const val BACKUP_FORMAT = "pagerapp-backup"
+        private const val BACKUP_VERSION = 1
+        private val BACKUP_KEYS = listOf(
+            KEY_SERVER, KEY_UUID, KEY_NAME, KEY_THEME, KEY_LANGUAGE, KEY_ALT_SERVER, KEY_PHOTO_SHARE,
+            KEY_PUB, KEY_SEC, KEY_FPR, KEY_EXP, KEY_EXP_MONTHS, KEY_BITS,
+            KEY_CONTACTS, KEY_PAGE_MAILBOXES, KEY_POLL, KEY_CONFIG, KEY_BYPASS, KEY_SILENCE,
+            KEY_RELIABLE, KEY_ALARM, KEY_PUSH_ENABLED, KEY_FCM, KEY_SEEN, KEY_HISTORY,
+        )
 
         /** Preference keys whose change should refresh the Pages list. */
         val HISTORY_KEYS = setOf(KEY_HISTORY, KEY_SEEN)

@@ -5,7 +5,7 @@ struct RulesView: View {
     @State private var customInput = ""
 
     private var defined: [Int] {
-        Array(Set(config.statusRules.keys).union(Set(0...5))).sorted()
+        Array(Set(config.statusRules.keys).union(Set(0...5)).union(Set([STATUS_DEBUG]))).sorted()
     }
 
     var body: some View {
@@ -50,7 +50,7 @@ private struct RuleRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("status \(status)").bold()
+            Text(pageStatusLabel(status, nil)).bold()
             Picker("action", selection: Binding(
                 get: { rule.action },
                 set: { rule.action = $0; onChange(rule) }

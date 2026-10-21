@@ -7,7 +7,11 @@ enum Notifier {
     static let ackActionId = "PAGER_ACK"
 
     static func registerCategories() {
-        let ack = UNNotificationAction(identifier: ackActionId, title: "ACK", options: [])
+        let ack = UNNotificationAction(
+            identifier: ackActionId,
+            title: "ACK",
+            options: []
+        )
         let category = UNNotificationCategory(
             identifier: categoryId,
             actions: [ack],
@@ -22,20 +26,30 @@ enum Notifier {
             .requestAuthorization(options: [.alert, .sound, .badge])
     }
 
-    static func post(_ page: Page, audible: Bool) {
+    static func post(
+        _ page: Page,
+        audible: Bool,
+        mailbox: String,
+        serverUrl: String
+    ) {
         let content = UNMutableNotificationContent()
         content.title = page.jobId ?? page.project ?? "PagerAPP page"
-        content.body = [page.message ?? "status \(page.status)", page.logs]
+        let body = [page.message ?? "status \(page.status)", page.logs]
             .compactMap { $0 }
             .joined(separator: "\n\n")
+        content.body = body
         content.categoryIdentifier = categoryId
+        content.threadIdentifier = mailbox
         content.userInfo = [
             "page_id": page.id,
+            "mailbox": mailbox,
+            "server_url": serverUrl,
             "ack_uuid": page.ackUuid ?? "",
             "reply_uuid": page.replyUuid ?? "",
             "ack_token": page.ackToken ?? "",
+            "from": page.from ?? "",
         ]
-        if audible { content.sound = .default } else { content.sound = nil }
+        content.sound = audible ? .default : nil
 
         let request = UNNotificationRequest(
             identifier: page.id,
@@ -43,5 +57,12 @@ enum Notifier {
             trigger: nil
         )
         UNUserNotificationCenter.current().add(request)
+    }
+
+    static func remove(pageId: String) {
+        UNUserNotificationCenter.current()
+            .removeDeliveredNotifications(withIdentifiers: [pageId])
+        UNUserNotificationCenter.current()
+            .removePendingNotificationRequests(withIdentifiers: [pageId])
     }
 }

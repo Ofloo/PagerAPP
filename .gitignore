@@ -15,6 +15,7 @@ android/*.keystore
 ios/build/
 ios/DerivedData/
 ios/Pods/
+ios/PgpBridge/target/
 *.ipa
 
 # Gradle (all modules)

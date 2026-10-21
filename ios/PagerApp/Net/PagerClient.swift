@@ -38,6 +38,19 @@ final class PagerClient {
         return raw.compactMap { try? PageParser.parse($0) }
     }
 
+    /// Removes one processed page from the mailbox queue.
+    func ack(serverUrl: String, uuid: String, messageId: String) async throws {
+        var request = URLRequest(
+            url: URL(string: "\(serverUrl)/mailboxes/\(uuid)/ack")!
+        )
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(uuid)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["id": messageId])
+        let (_, response) = try await session.data(for: request)
+        try Self.check(response)
+    }
+
     func notify(serverUrl: String, bearer: String, payload: [String: Any]) async throws {
         var request = URLRequest(url: URL(string: "\(serverUrl)/notify")!)
         request.httpMethod = "POST"

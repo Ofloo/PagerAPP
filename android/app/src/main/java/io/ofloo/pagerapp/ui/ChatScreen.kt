@@ -52,6 +52,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AddAPhoto
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
@@ -141,6 +142,7 @@ fun ChatScreen(
     var fullscreenPhoto by remember { mutableStateOf<String?>(null) }
     var actionEntry by remember { mutableStateOf<HistoryEntry?>(null) }
     var deleteEntry by remember { mutableStateOf<HistoryEntry?>(null) }
+    var showArchiveConfirm by remember { mutableStateOf(false) }
     var downloading by remember { mutableStateOf<String?>(null) }
 
     // System back / gesture navigation: close an open overlay first, otherwise return to the
@@ -148,8 +150,10 @@ fun ChatScreen(
     BackHandler(enabled = fullscreenPhoto != null) { fullscreenPhoto = null }
     BackHandler(enabled = actionEntry != null) { actionEntry = null }
     BackHandler(enabled = deleteEntry != null) { deleteEntry = null }
+    BackHandler(enabled = showArchiveConfirm) { showArchiveConfirm = false }
     BackHandler(
-        enabled = fullscreenPhoto == null && actionEntry == null && deleteEntry == null,
+        enabled = fullscreenPhoto == null && actionEntry == null &&
+            deleteEntry == null && !showArchiveConfirm,
     ) { onBack() }
 
     // Live updates: incoming pages and our own sends both land here.
@@ -511,7 +515,7 @@ fun ChatScreen(
             TextButton(onClick = onBack) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
             }
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(liveContact.name.ifBlank { "(unnamed)" }, style = MaterialTheme.typography.titleMedium)
                 Text(
                     when {
@@ -522,6 +526,9 @@ fun ChatScreen(
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            IconButton(onClick = { showArchiveConfirm = true }) {
+                Icon(Icons.Default.Archive, contentDescription = "Archive chat")
             }
         }
 
@@ -585,7 +592,7 @@ fun ChatScreen(
                                                 Row {
                                                     TextButton(onClick = {
                                                         ChatPhotos.openAttachment(context, filePath, fileMime)
-                                                    }) { Text("Open") }
+                                                    }) { Text(tr("Open")) }
                                                     TextButton(onClick = {
                                                         scope.launch {
                                                             val ok = withContext(Dispatchers.IO) {
@@ -606,12 +613,12 @@ fun ChatScreen(
                                                                 Toast.LENGTH_SHORT,
                                                             ).show()
                                                         }
-                                                    }) { Text("Save") }
+                                                    }) { Text(tr("Save")) }
                                                 }
                                             }
                                         }
                                         link != null -> Column {
-                                            Text("Photo link · ${link.days} day(s)")
+                                            Text(tr("Photo link · ${link.days} day(s)"))
                                             TextButton(
                                                 enabled = downloading != entry.id,
                                                 onClick = { downloadShared(entry, link) },
@@ -620,7 +627,7 @@ fun ChatScreen(
                                             }
                                         }
                                         fileLink != null -> Column {
-                                            Text("Attachment link · ${fileLink.days} day(s)")
+                                            Text(tr("Attachment link · ${fileLink.days} day(s)"))
                                             Text(
                                                 fileLink.name,
                                                 fontSize = 10.sp,
@@ -633,7 +640,7 @@ fun ChatScreen(
                                                 Text(if (downloading == entry.id) "Downloading…" else "Download")
                                             }
                                         }
-                                        else -> Text(entry.message ?: "(no text)")
+                                        else -> LinkedText(entry.message ?: "(no text)")
                                     }
                                     Spacer(Modifier.height(2.dp))
                                     Text(
@@ -675,7 +682,7 @@ fun ChatScreen(
         OutlinedTextField(
             value = text,
             onValueChange = { text = it },
-            placeholder = { Text("Message") },
+            placeholder = { Text(tr("Message")) },
             maxLines = 6,
             shape = RoundedCornerShape(24.dp),
             interactionSource = inputInteraction,
@@ -729,10 +736,40 @@ fun ChatScreen(
             )
         }
 
+        if (showArchiveConfirm) {
+            AlertDialog(
+                onDismissRequest = { showArchiveConfirm = false },
+                title = { Text(tr("Archive chat?")) },
+                text = {
+                    Text(
+                        "This clears the whole conversation on this device. The other side keeps " +
+                            "their copy. New messages will still arrive here.",
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        thread.forEach { entry ->
+                            entry.imagePath?.let { runCatching { File(it).delete() } }
+                            entry.filePath?.let { runCatching { File(it).delete() } }
+                        }
+                        store.deleteThread(
+                            senderId = liveContact.senderId,
+                            mySenderId = liveContact.mySenderId,
+                        )
+                        showArchiveConfirm = false
+                        onBack()
+                    }) { Text(tr("Archive")) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showArchiveConfirm = false }) { Text(tr("Cancel")) }
+                },
+            )
+        }
+
         deleteEntry?.let { entry ->
             AlertDialog(
                 onDismissRequest = { deleteEntry = null },
-                title = { Text("Delete message?") },
+                title = { Text(tr("Delete message?")) },
                 text = {
                     Text(
                         "This removes the message from this device only. The other side keeps " +
@@ -747,10 +784,10 @@ fun ChatScreen(
                         store.deleteEntry(entry.id)
                         revision++
                         deleteEntry = null
-                    }) { Text("Delete") }
+                    }) { Text(tr("Delete")) }
                 },
                 dismissButton = {
-                    TextButton(onClick = { deleteEntry = null }) { Text("Cancel") }
+                    TextButton(onClick = { deleteEntry = null }) { Text(tr("Cancel")) }
                 },
             )
         }
@@ -774,7 +811,7 @@ private fun PhotoBubble(path: String) {
                 .heightIn(max = 260.dp)
                 .padding(bottom = 4.dp),
         )
-    } ?: Text("Photo", color = MaterialTheme.colorScheme.onSurfaceVariant)
+    } ?: Text(tr("Photo"), color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 @Composable
@@ -872,7 +909,7 @@ private fun MessageInfoDialog(
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 if (entry.imagePath == null && link == null && !entry.message.isNullOrBlank()) {
-                    Text(entry.message ?: "")
+                    LinkedText(entry.message ?: "")
                     Spacer(Modifier.height(6.dp))
                 }
                 InfoRow("sent", fullDateTime(entry.createdAt))
@@ -901,16 +938,16 @@ private fun MessageInfoDialog(
                 if (copyText.isNotBlank()) {
                     TextButton(onClick = {
                         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        cm.setPrimaryClip(ClipData.newPlainText("PagerAPP message", copyText))
+                        cm.setPrimaryClip(ClipData.newPlainText(tr("PagerAPP message"), copyText))
                         Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
-                    }) { Text("Copy") }
+                    }) { Text(tr("Copy")) }
                 }
-                TextButton(onClick = onDismiss) { Text("Close") }
+                TextButton(onClick = onDismiss) { Text(tr("Close")) }
             }
         },
         dismissButton = {
             TextButton(onClick = onDelete) {
-                Text("Delete", color = MaterialTheme.colorScheme.error)
+                Text(tr("Delete"), color = MaterialTheme.colorScheme.error)
             }
         },
     )

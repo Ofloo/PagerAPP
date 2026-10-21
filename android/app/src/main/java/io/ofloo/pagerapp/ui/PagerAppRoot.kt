@@ -145,7 +145,7 @@ fun PagerAppRoot(
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text("Setting up PagerAPP…")
+            Text(tr("Setting up PagerAPP…"))
             setupError?.let {
                 Spacer(Modifier.height(12.dp))
                 Text(it, color = MaterialTheme.colorScheme.error)
@@ -171,10 +171,10 @@ fun PagerAppRoot(
                 sharePicker = null
                 onShareConsumed()
             },
-            title = { Text("Share to…") },
+            title = { Text(tr("Share to…")) },
             text = {
                 if (contacts.isEmpty()) {
-                    Text("Add a contact first, then share again.")
+                    Text(tr("Add a contact first, then share again."))
                 } else {
                     Column(
                         modifier = Modifier
@@ -228,7 +228,7 @@ fun PagerAppRoot(
         ) {
             ScrollableTabRow(selectedTabIndex = tab, edgePadding = 0.dp) {
                 TABS.forEachIndexed { i, title ->
-                    Tab(selected = tab == i, onClick = { tab = i }, text = { Text(title) })
+                    Tab(selected = tab == i, onClick = { tab = i }, text = { Text(tr(title)) })
                 }
             }
             when (tab) {
@@ -319,17 +319,17 @@ private fun PagesScreen(
             FilterChip(
                 selected = mode == PageMode.CHATS,
                 onClick = { mode = PageMode.CHATS },
-                label = { Text("Chats") },
+                label = { Text(tr("Chats")) },
             )
             FilterChip(
                 selected = mode == PageMode.PAGES,
                 onClick = { mode = PageMode.PAGES },
-                label = { Text("Pages") },
+                label = { Text(tr("Pages")) },
             )
             FilterChip(
                 selected = mode == PageMode.ARCHIVED,
                 onClick = { mode = PageMode.ARCHIVED },
-                label = { Text("Archived") },
+                label = { Text(tr("Archived")) },
             )
         }
 
@@ -622,7 +622,7 @@ private fun PageDetailDialog(
             Column {
                 Text(statusLabel(entry.status, entry.prio), color = statusColor(entry.status), fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
-                Text(entry.message ?: "(no message)")
+                LinkedText(entry.message ?: "(no message)")
                 Spacer(Modifier.height(10.dp))
                 KeyValue("status", entry.status.toString())
                 KeyValue("sent", fullDateTime(entry.createdAt))
@@ -640,22 +640,22 @@ private fun PageDetailDialog(
                 if (!entry.replyUuid.isNullOrBlank()) KeyValue("ack via ProLOG", entry.replyUuid)
                 if (entry.acked) {
                     Spacer(Modifier.height(8.dp))
-                    Text("Already acknowledged", color = MaterialTheme.colorScheme.primary)
+                    Text(tr("Already acknowledged"), color = MaterialTheme.colorScheme.primary)
                 }
                 Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
                     value = note,
                     onValueChange = { note = it },
-                    label = { Text("optional note with your ACK") },
+                    label = { Text(tr("optional note with your ACK")) },
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
         },
         confirmButton = {
             val canAck = entry.delivered && !entry.acked
-            TextButton(enabled = canAck, onClick = { onAck(note) }) { Text("ACK") }
+            TextButton(enabled = canAck, onClick = { onAck(note) }) { Text(tr("ACK")) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(tr("Close")) } },
     )
 }
 

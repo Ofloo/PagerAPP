@@ -1,0 +1,13 @@
+[package]
+name = "pager_pgp"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "pager_pgp"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+pgp = "0.21"
+rand = "0.8"

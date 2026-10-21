@@ -134,6 +134,8 @@ struct PagerConfig: Codable, Equatable {
 struct Page: Identifiable, Equatable {
     let id: String
     let status: Int
+    var createdAt: Double? = nil
+    var ageSeconds: Double? = nil
     var project: String?
     var jobId: String?
     var message: String?
@@ -142,6 +144,52 @@ struct Page: Identifiable, Equatable {
     var ackUuid: String?
     var replyUuid: String? = nil
     var ackToken: String? = nil
+    var from: String? = nil
+    var fromName: String? = nil
+    var mid: String? = nil
+    var read: String? = nil
+    var pub: String? = nil
+    var enc: String? = nil
+
+    init(
+        id: String,
+        status: Int,
+        createdAt: Double? = nil,
+        ageSeconds: Double? = nil,
+        project: String? = nil,
+        jobId: String? = nil,
+        message: String? = nil,
+        logs: String? = nil,
+        prio: String? = nil,
+        ackUuid: String? = nil,
+        replyUuid: String? = nil,
+        ackToken: String? = nil,
+        from: String? = nil,
+        fromName: String? = nil,
+        mid: String? = nil,
+        read: String? = nil,
+        pub: String? = nil,
+        enc: String? = nil
+    ) {
+        self.id = id
+        self.status = status
+        self.createdAt = createdAt
+        self.ageSeconds = ageSeconds
+        self.project = project
+        self.jobId = jobId
+        self.message = message
+        self.logs = logs
+        self.prio = prio
+        self.ackUuid = ackUuid
+        self.replyUuid = replyUuid
+        self.ackToken = ackToken
+        self.from = from
+        self.fromName = fromName
+        self.mid = mid
+        self.read = read
+        self.pub = pub
+        self.enc = enc
+    }
 
     var ackAvailable: Bool { !(ackUuid ?? "").trimmingCharacters(in: .whitespaces).isEmpty }
     var prologAckAvailable: Bool {
@@ -271,6 +319,8 @@ enum PageParser {
         let message = json["message"] as? String
         let logs = json["logs"] as? String
         let parsedStatus = parseStatus(json["status"])
+        let createdAt = numeric(json["created_at"])
+        let ageSeconds = numeric(json["age_seconds"])
         let rawPrio = (json["prio"] as? String)?.trimmingCharacters(in: .whitespaces)
         let prio: String?
         if let rawPrio, statusForUrgency(rawPrio) != nil {
@@ -282,6 +332,8 @@ enum PageParser {
         return Page(
             id: id,
             status: statusForUrgency(prio) ?? parsedStatus,
+            createdAt: createdAt,
+            ageSeconds: ageSeconds,
             project: project,
             jobId: json["JOB_ID"] as? String,
             message: message,
@@ -289,8 +341,22 @@ enum PageParser {
             prio: prio,
             ackUuid: json["ack_uuid"] as? String,
             replyUuid: (json["reply_uuid"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? prologAck?.0,
-            ackToken: (json["ack_token"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? prologAck?.1
+            ackToken: (json["ack_token"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? prologAck?.1,
+            from: json["from"] as? String,
+            fromName: json["from_name"] as? String,
+            mid: json["mid"] as? String,
+            read: json["read"] as? String,
+            pub: json["pub"] as? String,
+            enc: json["enc"] as? String
         )
+    }
+
+    static func numeric(_ raw: Any?) -> Double? {
+        if let n = raw as? Double { return n }
+        if let n = raw as? Int { return Double(n) }
+        if let n = raw as? NSNumber { return n.doubleValue }
+        if let s = raw as? String { return Double(s) }
+        return nil
     }
 
     static func parseStatus(_ raw: Any?) -> Int {
