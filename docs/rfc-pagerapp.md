@@ -7,11 +7,12 @@ other applications can produce and consume the same pages, contacts and acknowle
 interoperate. PagerMCP itself is an unmodified, opaque relay and is described only as far as a
 client needs it.
 
-**Roles.** ProLOG is a product that can optionally send pages through PagerMCP. PagerMCP is the
-generic mailbox relay. PagerAPP is a client extension on top of PagerMCP for system alarms and
-chat; it supports the ProLOG page profile as an optional compatibility path, but neither PagerMCP
-nor PagerAPP requires ProLOG. The components are designed to complement one another, while each
-one remains generic and independently usable.
+**Roles.** PagerMCP is the generic mailbox relay, originally built as the pager for OpenCode/AI
+agents. PagerAPP is a client extension on top of PagerMCP for system alarms and chat, so it
+depends on PagerMCP. ProLOG is a product that can optionally send pages through PagerMCP. The
+dependency direction is PagerAPP → PagerMCP and, optionally, ProLOG → PagerMCP; PagerMCP depends
+on neither. PagerAPP supports the ProLOG page profile as an optional compatibility path, but does
+not require ProLOG.
 
 Page semantics — the level table and the exact fields that request an acknowledgement versus a
 plain page — are defined in [RFC-PagerAPP-0002](rfc-pages.md), which is authoritative for §3 and §6
