@@ -8,11 +8,13 @@ acknowledgement. It is the authoritative description of page semantics for Pager
 client structures are in [RFC-PagerAPP-0001](rfc-pagerapp.md).
 
 Roles: **PagerMCP** is the generic mailbox relay, originally built as the pager for OpenCode/AI
-agents; it is usable by any producer or consumer. **PagerAPP** is a client extension on top of
-PagerMCP for system alarms and chat, and therefore depends on PagerMCP. **ProLOG** is a product
-that can optionally send pages through PagerMCP. The dependency direction is PagerAPP → PagerMCP
-and, optionally, ProLOG → PagerMCP; PagerMCP depends on neither. Supporting the ProLOG profile
-below is an optional compatibility path, not a dependency.
+agents; it is usable by any producer or consumer, including cron jobs and other systems.
+**PagerAPP** is the human-facing client extension on top of PagerMCP for system alarms and chat,
+and therefore depends on PagerMCP. **ProLOG** is a PLC alarm logger that can optionally use
+PagerMCP to page when an alarm occurs; it does not depend on PagerMCP. PagerAPP is not limited to
+ProLOG pages. The dependency direction is PagerAPP → PagerMCP and, optionally,
+ProLOG → PagerMCP; PagerMCP depends on neither. Supporting the ProLOG profile below is an optional
+compatibility path, not a dependency.
 
 Two sender profiles are defined:
 
