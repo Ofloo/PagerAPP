@@ -1,4 +1,4 @@
-const CACHE = 'pagerapp-shell-v2';
+const CACHE = 'pagerapp-shell-v3';
 const SHELL = [
   '/', '/index.html', '/pair.html', '/css/salt.css',
   '/vendor/bootstrap.min.css', '/vendor/bootstrap.bundle.min.js',

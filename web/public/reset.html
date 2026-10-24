@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PagerAPP reset</title>
+<link rel="stylesheet" href="/vendor/bootstrap.min.css"><link rel="stylesheet" href="/css/salt.css"></head>
+<body><main class="container py-5" style="max-width:640px"><div class="panel">
+<div class="panel-kicker">PAGERAPP WEB</div><h1 class="h3 mt-2">Resetting this browser…</h1>
+<p class="text-muted-warm">Unregistering the service worker and clearing the web shell cache.</p>
+<a class="btn btn-salt" href="/">Back to PagerAPP</a>
+</div></main><script>
+(async () => {
+  try {
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+    }
+    if (window.caches) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((key) => caches.delete(key)));
+    }
+    sessionStorage.clear();
+  } catch (e) {}
+  location.replace('/?fresh=' + Date.now());
+})();
+</script></body></html>
