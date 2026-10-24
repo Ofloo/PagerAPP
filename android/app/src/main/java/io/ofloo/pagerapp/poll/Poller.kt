@@ -395,7 +395,9 @@ object Poller {
         }
         val jpeg = runCatching { Pgp.decryptBytes(armor, secret) }.getOrNull() ?: return null
         if (jpeg.size > 9_000_000) return null
-        return ChatPhotos.saveImage(context, "image-${page.id}", jpeg)
+        val path = ChatPhotos.saveImage(context, "image-${page.id}", jpeg) ?: return null
+        PhotoShare.delete(store.photoShareUrl, link.deleteUrl)
+        return path
     }
 
     private data class DownloadedAttachment(val path: String, val name: String, val mime: String)
@@ -419,6 +421,7 @@ object Poller {
             link.name,
             bytes,
         ) ?: return null
+        PhotoShare.delete(store.photoShareUrl, link.deleteUrl)
         return DownloadedAttachment(path, link.name, link.mime)
     }
 }

@@ -14,6 +14,7 @@ data class FileLink(
     val days: Int = 3,
     val name: String = "attachment",
     val mime: String = "application/octet-stream",
+    val deleteUrl: String? = null,
 ) {
     fun encode(): String = buildString {
         append("pagerapp://file?u=")
@@ -22,6 +23,7 @@ data class FileLink(
         append("&d=").append(days)
         append("&n=").append(encodePart(name))
         append("&t=").append(encodePart(mime))
+        deleteUrl?.takeIf { it.isNotBlank() }?.let { append("&x=").append(encodePart(it)) }
     }
 
     companion object {
@@ -43,7 +45,9 @@ data class FileLink(
                 ?: "attachment"
             val mime = values["t"]?.let { decodePart(it) }?.takeIf { it.isNotBlank() }
                 ?: "application/octet-stream"
-            return FileLink(url, sha, days, name, mime)
+            val deleteUrl = values["x"]?.let { decodePart(it) }
+                ?.takeIf { it.startsWith("https://", ignoreCase = true) }
+            return FileLink(url, sha, days, name, mime, deleteUrl)
         }
 
         private fun encodePart(value: String): String =

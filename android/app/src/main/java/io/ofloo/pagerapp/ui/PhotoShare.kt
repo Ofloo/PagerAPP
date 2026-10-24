@@ -20,6 +20,9 @@ import java.util.concurrent.ConcurrentHashMap
  */
 object PhotoShare {
 
+    /** The public URL and the one-shot transfer.sh delete URL returned by the host. */
+    data class Upload(val url: String, val deleteUrl: String?)
+
     private const val MAX_DOWNLOAD_BYTES = 20_000_000
     private const val RETENTION_DEFAULT = 3
     private const val RETENTION_CACHE_MS = 24L * 60L * 60L * 1000L
@@ -76,7 +79,7 @@ object PhotoShare {
      * PUTs the armored ciphertext to the configured share host. Returns the public HTTPS URL, or
      * null on any failure. The file gets a random name; nothing about the image is in the path.
      */
-    fun upload(configured: String, armor: String): String? = runCatching {
+    fun upload(configured: String, armor: String): Upload? = runCatching {
         val base = baseUrl(configured)
         val host = hostOf(base) ?: return@runCatching null
         if (!base.startsWith("https://", ignoreCase = true)) return@runCatching null
@@ -98,11 +101,38 @@ object PhotoShare {
             conn.outputStream.use { it.write(bytes) }
             if (conn.responseCode !in 200..299) return@runCatching null
             val url = conn.inputStream.bufferedReader().use { it.readText() }.trim()
-            url.takeIf { isAllowed(base, it) && hostOf(it).equals(host, ignoreCase = true) }
+            if (!isAllowed(base, url) || !hostOf(url).equals(host, ignoreCase = true)) {
+                return@runCatching null
+            }
+            val deleteUrl = conn.getHeaderField("X-Url-Delete")
+                ?.trim()
+                ?.takeIf { isAllowed(base, it) && hostOf(it).equals(host, ignoreCase = true) }
+            Upload(url, deleteUrl)
         } finally {
             conn.disconnect()
         }
     }.getOrNull()
+
+    /** Deletes an uploaded file after a successful local download, when the host gave a token. */
+    fun delete(configured: String, deleteUrl: String?): Boolean {
+        if (deleteUrl.isNullOrBlank()) return false
+        val base = baseUrl(configured)
+        if (!isAllowed(base, deleteUrl)) return false
+        return runCatching {
+            val conn = (URL(deleteUrl).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 10_000
+                readTimeout = 20_000
+                requestMethod = "DELETE"
+                instanceFollowRedirects = false
+                setRequestProperty("User-Agent", "PagerAPP")
+            }
+            try {
+                conn.responseCode in 200..299 || conn.responseCode == 404
+            } finally {
+                conn.disconnect()
+            }
+        }.getOrDefault(false)
+    }
 
     /**
      * Downloads an uploaded armored blob and verifies it against [expectedSha256]. Only HTTPS URLs

@@ -323,12 +323,16 @@ fun ChatScreen(
                     ) ?: error("could not prepare the photo")
                     val armor = Pgp.encryptBytes(jpeg, liveContact.publicKey)
                     val shareHost = PhotoShare.baseUrl(store.photoShareUrl)
-                    val url = PhotoShare.upload(shareHost, armor)
+                    val upload = PhotoShare.upload(shareHost, armor)
                         ?: error("upload to $shareHost failed")
                     val days = PhotoShare.retentionDays(shareHost)
                     val imageId = UUID.randomUUID().toString()
                     val path = ChatPhotos.saveImage(context, "image-$imageId", jpeg)
-                    Triple(PhotoLink(url, sha256Hex(armor), days), path, imageId)
+                    Triple(
+                        PhotoLink(upload.url, sha256Hex(armor), days, upload.deleteUrl),
+                        path,
+                        imageId,
+                    )
                 }
             }
             val (link, path, _) = prepared.getOrNull() ?: run {
@@ -363,10 +367,17 @@ fun ChatScreen(
                 runCatching {
                     val armor = Pgp.encryptBytes(attachment.bytes, liveContact.publicKey)
                     val shareHost = PhotoShare.baseUrl(store.photoShareUrl)
-                    val url = PhotoShare.upload(shareHost, armor)
+                    val upload = PhotoShare.upload(shareHost, armor)
                         ?: error("upload to $shareHost failed")
                     val days = PhotoShare.retentionDays(shareHost)
-                    val link = FileLink(url, sha256Hex(armor), days, attachment.name, attachment.mime)
+                    val link = FileLink(
+                        upload.url,
+                        sha256Hex(armor),
+                        days,
+                        attachment.name,
+                        attachment.mime,
+                        upload.deleteUrl,
+                    )
                     val path = ChatPhotos.saveAttachment(
                         context,
                         "file-${UUID.randomUUID()}",
@@ -411,6 +422,7 @@ fun ChatScreen(
                         link.name,
                         bytes,
                     ) ?: error("save failed")
+                    PhotoShare.delete(store.photoShareUrl, link.deleteUrl)
                     Triple(path, link.name, link.mime)
                 }.getOrNull()
             }
@@ -436,7 +448,10 @@ fun ChatScreen(
                         ?: error("download failed")
                     val secret = store.ownSecretKey.ifBlank { null } ?: error("no secret key")
                     val jpeg = Pgp.decryptBytes(armor, secret)
-                    ChatPhotos.saveImage(context, "image-${entry.id}", jpeg)
+                    val path = ChatPhotos.saveImage(context, "image-${entry.id}", jpeg)
+                        ?: error("save failed")
+                    PhotoShare.delete(store.photoShareUrl, link.deleteUrl)
+                    path
                 }.getOrNull()
             }
             if (path != null) {

@@ -438,6 +438,7 @@ class PhotoTest {
             days = 3,
             name = "report final.pdf",
             mime = "application/pdf",
+            deleteUrl = "https://share.h4ck.io/abc/report.asc/token",
         )
         val parsed = FileLink.parse(link.encode())!!
         assertEquals(link.url, parsed.url)
@@ -445,16 +446,23 @@ class PhotoTest {
         assertEquals("report final.pdf", parsed.name)
         assertEquals("application/pdf", parsed.mime)
         assertEquals(3, parsed.days)
+        assertEquals("https://share.h4ck.io/abc/report.asc/token", parsed.deleteUrl)
         assertEquals(null, FileLink.parse("https://share.h4ck.io/abc/report.asc"))
     }
 
     @Test
     fun photoLinkRoundTrips() {
-        val link = PhotoLink("https://share.h4ck.io/abc/photo.asc", "a".repeat(64), days = 3)
+        val link = PhotoLink(
+            "https://share.h4ck.io/abc/photo.asc",
+            "a".repeat(64),
+            days = 3,
+            deleteUrl = "https://share.h4ck.io/abc/photo.asc/token",
+        )
         val parsed = PhotoLink.parse(link.encode())!!
         assertEquals(link.url, parsed.url)
         assertEquals(link.sha256, parsed.sha256)
         assertEquals(3, parsed.days)
+        assertEquals("https://share.h4ck.io/abc/photo.asc/token", parsed.deleteUrl)
         assertEquals(null, PhotoLink.parse("https://share.h4ck.io/abc/photo.asc"))
     }
 }
