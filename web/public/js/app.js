@@ -3,6 +3,9 @@
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 
+const SESSION_DAYS = 30;
+const RENEW_BEFORE_MS = 3 * 24 * 60 * 60 * 1000;
+
 const state = {
   server: sessionStorage.getItem('pagerapp.server') || 'https://pager.ofloo.io',
   uuid: sessionStorage.getItem('pagerapp.uuid') || '',
@@ -205,21 +208,35 @@ function saveTransfer(transfer) {
   else sessionStorage.removeItem('pagerapp.transfer');
 }
 
+function renewalDue() {
+  return Boolean(state.transfer) && Date.now() >= state.transfer.expires - RENEW_BEFORE_MS;
+}
+
+function daysRemaining() {
+  if (!state.transfer) return 0;
+  return Math.max(0, Math.ceil((state.transfer.expires - Date.now()) / 86400000));
+}
+
 function renderTransfer() {
   const transfer = state.transfer;
   const info = $('#sessionInfo');
   const chip = $('#sessionChip');
-  $('#renewSession').disabled = !transfer;
+  $('#renewSession').disabled = !renewalDue();
   $('#deleteSession').disabled = !transfer;
   if (!transfer) {
     info.classList.add('d-none');
     chip.textContent = 'none';
     chip.className = 'chip';
+    $('#createSession').classList.remove('d-none');
+    $('#pairAction').classList.remove('d-none');
     return;
   }
-  info.classList.remove('d-none');
-  chip.textContent = 'open';
-  chip.className = 'chip ok';
+  const due = renewalDue();
+  info.classList.toggle('d-none', !due);
+  $('#createSession').classList.toggle('d-none', !due);
+  $('#pairAction').classList.toggle('d-none', !due);
+  chip.textContent = due ? `renew · ${daysRemaining()}d` : `active · ${daysRemaining()}d`;
+  chip.className = `chip ${due ? 'bad' : 'ok'}`;
   $('#sessionExpiry').textContent = `expires ${new Date(transfer.expires).toLocaleString()}`;
   $('#sessionHint').textContent = 'Scan with PagerAPP to hand data to this tab. Private keys stay here.';
   const url = `${location.origin}/pair?session=${encodeURIComponent(transfer.id)}&token=${encodeURIComponent(transfer.token)}`;
@@ -235,8 +252,17 @@ function renderTransfer() {
 }
 
 let pairModal = null;
-function showPairing() {
+function showPairing(mode = 'initial') {
   if (state.uuid) return;
+  const title = document.querySelector('#pairTitle');
+  const intro = document.querySelector('#pairModal p');
+  if (mode === 'renew') {
+    title.textContent = 'Renew this browser session';
+    intro.textContent = 'This session reaches day 27. Scan the code with PagerAPP to extend it by 30 days, or close this dialog and let it expire.';
+  } else {
+    title.textContent = 'Link this browser to your phone';
+    intro.textContent = 'Open PagerAPP on your phone and scan this code. The app supplies the mailbox, server and session; the private key stays on the phone.';
+  }
   pairModal = pairModal || new bootstrap.Modal($('#pairModal'), { backdrop: 'static', keyboard: false });
   pairModal.show();
 }
@@ -248,7 +274,7 @@ async function createSession() {
     const transfer = await response.json();
     saveTransfer(transfer);
     renderTransfer();
-    showPairing();
+    showPairing('initial');
     toast('Pairing code ready');
   } catch (error) {
     toast(`Could not create session: ${error.message}`);
@@ -346,9 +372,17 @@ bind();
 state.transfer = sessionFromStorage();
 updateConnection();
 renderTransfer();
-if (!state.uuid) {
-  if (state.transfer) showPairing();
-  else createSession();
+if (!state.transfer) {
+  createSession();
+} else if (!state.uuid && renewalDue()) {
+  showPairing('renew');
 }
 checkHealth();
+setInterval(() => {
+  if (!state.transfer || state.uuid) return;
+  if (renewalDue()) {
+    renderTransfer();
+    showPairing('renew');
+  }
+}, 60 * 60 * 1000);
 setInterval(checkHealth, 30000);
