@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1c2c">
+  <title>PagerAPP</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/vendor/bootstrap.min.css">
+  <link rel="stylesheet" href="/css/salt.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="container-xxl d-flex align-items-center gap-3 py-2">
+      <a class="brand text-decoration-none d-flex align-items-center gap-2" href="/" data-nav="overview">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>PagerAPP</span>
+      </a>
+      <span class="brand-sub d-none d-md-inline">pager console</span>
+      <nav class="nav nav-pills ms-auto align-items-center" id="mainNav">
+        <button class="nav-link active" data-view="overview">Overview</button>
+        <button class="nav-link" data-view="pages">Pages</button>
+        <button class="nav-link" data-view="chats">Chats</button>
+        <button class="nav-link" data-view="settings">Settings</button>
+      </nav>
+      <button class="btn btn-sm btn-outline-theme ms-2" id="themeToggle" type="button" aria-label="Toggle theme">
+        <span id="themeIcon">◐</span>
+      </button>
+    </div>
+  </header>
+
+  <main class="container-xxl py-4">
+    <div class="hero mb-4">
+      <div>
+        <div class="eyebrow">PAGERMCP CLIENT</div>
+        <h1 class="display-6 fw-semibold mb-1">Your alerts, in the browser.</h1>
+        <p class="text-muted-warm mb-0">A stateless web console for pages and conversations. The phone stays in control of the keys.</p>
+      </div>
+      <div class="hero-meta">
+        <span class="status-dot" id="healthDot"></span>
+        <span id="healthText">checking server…</span>
+      </div>
+    </div>
+
+    <section id="view-overview" class="view">
+      <div class="row g-3 mb-3">
+        <div class="col-12 col-xl-7">
+          <div class="panel h-100">
+            <div class="panel-head">
+              <div><span class="panel-kicker">CONNECTION</span><h2>Mailbox</h2></div>
+              <span class="chip" id="mailboxChip">not connected</span>
+            </div>
+            <form id="connectForm" class="row g-2 align-items-end">
+              <div class="col-12 col-lg-6">
+                <label class="form-label" for="serverInput">PagerMCP server</label>
+                <input class="form-control mono" id="serverInput" value="https://pager.ofloo.io" spellcheck="false">
+              </div>
+              <div class="col-12 col-lg-6">
+                <label class="form-label" for="uuidInput">Mailbox UUID</label>
+                <input class="form-control mono" id="uuidInput" placeholder="paste the bearer UUID" spellcheck="false">
+              </div>
+              <div class="col-12 d-flex gap-2">
+                <button class="btn btn-salt" type="submit">Connect</button>
+                <button class="btn btn-outline-secondary" type="button" id="disconnectBtn">Disconnect</button>
+                <span class="form-note ms-auto" id="connectNote">Stored for this tab only.</span>
+              </div>
+            </form>
+          </div>
+        </div>
+        <div class="col-12 col-md-4 col-xl-2">
+          <div class="panel metric h-100"><span>Queued</span><strong id="queuedMetric">—</strong><small>messages</small></div>
+        </div>
+        <div class="col-12 col-md-4 col-xl-3">
+          <div class="panel metric h-100"><span>Retention</span><strong id="retentionMetric">7d</strong><small>messages</small></div>
+        </div>
+      </div>
+
+      <div class="row g-3">
+        <div class="col-12 col-xl-7">
+          <div class="panel">
+            <div class="panel-head">
+              <div><span class="panel-kicker">QUEUE</span><h2>Recent pages</h2></div>
+              <button class="btn btn-sm btn-outline-secondary" id="refreshPages">Refresh</button>
+            </div>
+            <div id="recentPages" class="empty-state">Connect a mailbox to read its pages.</div>
+          </div>
+        </div>
+        <div class="col-12 col-xl-5">
+          <div class="panel h-100">
+            <div class="panel-head">
+              <div><span class="panel-kicker">HANDOFF</span><h2>Browser session</h2></div>
+              <span class="chip" id="sessionChip">none</span>
+            </div>
+            <p class="text-muted-warm small">The browser makes a temporary keypair. Scan the QR with the phone to hand over the session; the private key stays in this tab.</p>
+            <div class="d-flex gap-2 flex-wrap">
+              <button class="btn btn-salt" id="createSession">Create session QR</button>
+              <button class="btn btn-outline-secondary" id="renewSession" disabled>Renew</button>
+              <button class="btn btn-outline-danger" id="deleteSession" disabled>Discard</button>
+            </div>
+            <div id="sessionInfo" class="session-info mt-3 d-none">
+              <div class="qr-wrap"><div id="qrCode"></div></div>
+              <div class="mono small" id="sessionExpiry"></div>
+              <div class="mono small text-muted-warm" id="sessionHint">Scan with PagerAPP to pair this tab.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-pages" class="view d-none">
+      <div class="panel">
+        <div class="panel-head">
+          <div><span class="panel-kicker">SYSTEM ALERTS</span><h2>Pages</h2></div>
+          <div class="d-flex gap-2"><span class="chip" id="pagesCount">0</span><button class="btn btn-sm btn-outline-secondary" id="refreshPages2">Refresh</button></div>
+        </div>
+        <div id="pagesList" class="empty-state">Connect a mailbox to read its pages.</div>
+      </div>
+    </section>
+
+    <section id="view-chats" class="view d-none">
+      <div class="panel">
+        <div class="panel-head"><div><span class="panel-kicker">CONVERSATIONS</span><h2>Chats</h2></div><span class="chip">web session</span></div>
+        <div class="empty-state">
+          <strong>Chat is available when this tab is paired with the phone.</strong>
+          <div class="mt-2 small text-muted-warm">The phone holds the OpenPGP key and performs decryption; the browser only displays the session. This keeps the private key out of Docker and the browser's persistent storage.</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-settings" class="view d-none">
+      <div class="row g-3">
+        <div class="col-12 col-xl-6">
+          <div class="panel">
+            <div class="panel-head"><div><span class="panel-kicker">LOCAL</span><h2>Session</h2></div></div>
+            <p class="small text-muted-warm">This web console stores no data on the server. Mailbox and session values live in this tab's <span class="mono">sessionStorage</span> and disappear when it closes.</p>
+            <button class="btn btn-outline-danger" id="clearLocal">Clear this tab</button>
+          </div>
+        </div>
+        <div class="col-12 col-xl-6">
+          <div class="panel">
+            <div class="panel-head"><div><span class="panel-kicker">APPEARANCE</span><h2>Theme</h2></div></div>
+            <div class="d-flex gap-2">
+              <button class="btn btn-salt" data-theme-choice="dark">Dark</button>
+              <button class="btn btn-outline-secondary" data-theme-choice="light">Light</button>
+            </div>
+            <p class="small text-muted-warm mt-3 mb-0">Follows the Salt console palette; the choice is kept only in localStorage on this browser.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="container-xxl pb-4 d-flex justify-content-between small text-muted-warm">
+    <span>PagerAPP web · stateless</span>
+    <span class="mono">no Docker persistence</span>
+  </footer>
+
+  <div class="toast-container position-fixed bottom-0 end-0 p-3">
+    <div id="toast" class="toast align-items-center" role="status"><div class="d-flex"><div class="toast-body" id="toastBody"></div><button type="button" class="btn-close me-2 m-auto" data-bs-dismiss="toast"></button></div></div>
+  </div>
+
+  <script src="/vendor/bootstrap.bundle.min.js"></script>
+  <script src="/vendor/qrcode.js"></script>
+  <script src="/js/app.js"></script>
+  <script>if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");</script>
+</body>
+</html>

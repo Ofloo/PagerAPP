@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PagerAPP · pair</title>
+  <link rel="stylesheet" href="/vendor/bootstrap.min.css">
+  <link rel="stylesheet" href="/css/salt.css">
+</head>
+<body>
+  <main class="container py-5" style="max-width:640px">
+    <div class="panel">
+      <div class="panel-kicker">PAGERAPP HANDOFF</div>
+      <h1 class="h3 mt-2">Browser session</h1>
+      <p class="text-muted-warm">This page contains a one-time transfer token. Open it only on the phone that will hand data to the browser.</p>
+      <div class="mono small" id="sessionLine">No session token in this link.</div>
+      <a class="btn btn-salt mt-3" href="/">Back to console</a>
+    </div>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const id = params.get('session');
+    const token = params.get('token');
+    document.getElementById('sessionLine').textContent = id
+      ? `session ${id}${token ? ' · token present' : ' · token missing'}`
+      : 'No session token in this link.';
+  </script>
+</body>
+</html>

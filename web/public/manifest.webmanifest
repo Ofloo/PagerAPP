@@ -1,0 +1,9 @@
+{
+  "name": "PagerAPP web",
+  "short_name": "PagerAPP",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#081722",
+  "theme_color": "#0b1c2c",
+  "icons": []
+}
