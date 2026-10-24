@@ -34,3 +34,6 @@ dist/
 # Play publishing credentials (service account JSON) — never commit
 play-service-account.json
 *.play-service-account.json
+
+# Web image build counter
+web/.build_number
