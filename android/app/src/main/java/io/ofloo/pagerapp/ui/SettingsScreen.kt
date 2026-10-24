@@ -6,6 +6,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.provider.Settings
 import android.util.Log
 import androidx.compose.foundation.layout.Arrangement
@@ -91,6 +92,8 @@ fun SettingsScreen(
     var pushOn by remember { mutableStateOf(store.pushEnabled) }
     var fcmOn by remember { mutableStateOf(store.fcmEnabled) }
     var confirmReset by remember { mutableStateOf(false) }
+    var webBusy by remember { mutableStateOf(false) }
+    var webStatus by remember { mutableStateOf<String?>(null) }
     var pushStatus by remember { mutableStateOf<MailboxStatus?>(null) }
     var photoShare by remember { mutableStateOf(store.photoShareUrl) }
     var shareRetention by remember { mutableStateOf<Int?>(null) }
@@ -100,6 +103,46 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
     val uriHandler = LocalUriHandler.current
     val context = LocalContext.current
+
+    val webScanner = rememberQrScanner(
+        prompt = "Scan the PagerAPP browser QR",
+        onResult = { scanned ->
+            val uri = runCatching { Uri.parse(scanned.trim()) }.getOrNull()
+            val session = uri?.getQueryParameter("session")
+            val token = uri?.getQueryParameter("token")
+            val publicKey = uri?.getQueryParameter("pub")
+            val base = uri?.let { "${it.scheme}://${it.authority}" }
+            if (uri == null || uri.scheme !in listOf("http", "https") ||
+                uri.path != "/pair" || session.isNullOrBlank() ||
+                token.isNullOrBlank() || publicKey.isNullOrBlank() || base.isNullOrBlank()
+            ) {
+                webStatus = "That is not a PagerAPP browser pairing code."
+            } else {
+                webBusy = true
+                webStatus = "Encrypting the backup…"
+                scope.launch {
+                    val result = withContext(Dispatchers.IO) {
+                        runCatching {
+                            val backup = store.exportBackup()
+                            val encrypted = Pgp.encrypt(backup, publicKey)
+                            PagerClient.uploadWebHandoff(
+                                baseUrl = base,
+                                sessionId = session,
+                                token = token,
+                                armored = encrypted.toByteArray(Charsets.UTF_8),
+                            )
+                        }
+                    }
+                    webBusy = false
+                    webStatus = result.fold(
+                        onSuccess = { "Browser session linked. Waiting for the browser to import it." },
+                        onFailure = { "Browser link failed: ${it.message ?: "unknown error"}" },
+                    )
+                }
+            }
+        },
+        onDenied = { webStatus = "Camera permission is needed to scan the browser code." },
+    )
 
     val exportBackup = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json"),
@@ -175,6 +218,23 @@ fun SettingsScreen(
                         onServiceChanged(!it)
                     },
                 )
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Browser session", fontWeight = FontWeight.Bold)
+                Text(
+                    "Scan the QR shown by the PagerAPP web console. The app encrypts a backup to " +
+                        "the browser's temporary key and sends only ciphertext.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+                Button(
+                    enabled = !webBusy,
+                    onClick = { webScanner() },
+                ) { Text(if (webBusy) "Linking…" else "Scan browser QR") }
+                webStatus?.let { Text(it, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp) }
             }
         }
 

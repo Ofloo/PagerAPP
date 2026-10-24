@@ -11,7 +11,9 @@ const state = {
   uuid: sessionStorage.getItem('pagerapp.uuid') || '',
   pages: [],
   transfer: null,
+  transferKey: null,
 };
+let transferPoll = null;
 
 const STATUS_NAMES = {
   0: 'Success', 1: 'Warning', 2: 'Failed', 3: 'Critical',
@@ -239,8 +241,9 @@ function renderTransfer() {
   chip.className = `chip ${due ? 'bad' : 'ok'}`;
   $('#sessionExpiry').textContent = `expires ${new Date(transfer.expires).toLocaleString()}`;
   $('#sessionHint').textContent = 'Scan with PagerAPP to hand data to this tab. Private keys stay here.';
-  const url = `${location.origin}/pair?session=${encodeURIComponent(transfer.id)}&token=${encodeURIComponent(transfer.token)}`;
-  const qr = qrcode(0, 'M');
+  const pub = transfer.publicKey ? `&pub=${encodeURIComponent(transfer.publicKey)}` : '';
+  const url = `${location.origin}/pair?session=${encodeURIComponent(transfer.id)}&token=${encodeURIComponent(transfer.token)}${pub}`;
+  const qr = qrcode(0, 'L');
   qr.addData(url);
   qr.make();
   const svg = qr.createSvgTag({ cellSize: 3, margin: 2 });
@@ -267,14 +270,102 @@ function showPairing(mode = 'initial') {
   pairModal.show();
 }
 
+function randomTransferPassphrase() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function generateTransferKey() {
+  return new Promise((resolve, reject) => {
+    if (!window.kbpgp) return reject(new Error('OpenPGP library did not load'));
+    const flags = kbpgp.const.openpgp;
+    // A small RSA key is enough for a one-shot transfer; it keeps the public key inside a QR
+    // while the actual long-term PagerAPP key remains inside the encrypted backup.
+    kbpgp.KeyManager.generate(
+      {
+        userid: 'PagerAPP web transfer <web@pagerapp>',
+        primary: {
+          nbits: 1024,
+          flags: flags.certify_keys | flags.sign_data | flags.encrypt_comm |
+            flags.encrypt_storage,
+          expire_in: 0,
+        },
+        subkeys: [],
+      },
+      (err, km) => {
+        if (err) return reject(err);
+        km.sign({}, (signErr) => {
+          if (signErr) return reject(signErr);
+          const passphrase = randomTransferPassphrase();
+          km.export_pgp_private({ passphrase }, (privateErr, privateArmor) => {
+            if (privateErr) return reject(privateErr);
+            km.export_pgp_public({}, (publicErr, publicArmor) => {
+              if (publicErr) return reject(publicErr);
+              resolve({ km, privateArmor, passphrase, publicArmor });
+            });
+          });
+        });
+      },
+    );
+  });
+}
+
+function stopTransferPoll() {
+  if (transferPoll) clearInterval(transferPoll);
+  transferPoll = null;
+}
+
+function startTransferPoll() {
+  stopTransferPoll();
+  transferPoll = setInterval(pollTransfer, 2000);
+}
+
+async function pollTransfer() {
+  if (!state.transfer || !state.transferKey) return;
+  try {
+    const response = await fetch(
+      `/api/session/${encodeURIComponent(state.transfer.id)}/status`,
+      { headers: { Authorization: `Bearer ${state.transfer.token}` }, cache: 'no-store' },
+    );
+    if (!response.ok) return;
+    const status = await response.json();
+    if (!status.uploaded) return;
+    stopTransferPoll();
+    const blobResponse = await fetch(
+      `/api/session/${encodeURIComponent(state.transfer.id)}/download`,
+      { headers: { Authorization: `Bearer ${state.transfer.token}` }, cache: 'no-store' },
+    );
+    if (!blobResponse.ok) throw new Error(`download HTTP ${blobResponse.status}`);
+    const armored = await blobResponse.text();
+    const plain = await new Promise((resolve, reject) => {
+      kbpgp.unbox({ keyfetch: state.transferKey.km, armored }, (err, literals) => {
+        if (err) return reject(err);
+        if (!literals || !literals.length) return reject(new Error('empty transfer'));
+        resolve(literals[0].toString());
+      });
+    });
+    applyBackupText(plain);
+    pairModal?.hide();
+    toast('Phone backup received and imported');
+  } catch (error) {
+    toast(`Transfer failed: ${error.message}`);
+  }
+}
+
 async function createSession() {
   try {
+    document.querySelector('#pairTitle').textContent = 'Generating transfer key…';
+    const transferKey = await generateTransferKey();
     const response = await fetch('/api/session', { method: 'POST' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const transfer = await response.json();
+    state.transferKey = transferKey;
+    transfer.publicKey = transferKey.publicArmor;
     saveTransfer(transfer);
     renderTransfer();
     showPairing('initial');
+    startTransferPoll();
     toast('Pairing code ready');
   } catch (error) {
     toast(`Could not create session: ${error.message}`);
@@ -306,6 +397,7 @@ async function deleteSession() {
       headers: { Authorization: `Bearer ${state.transfer.token}` },
     });
     saveTransfer(null);
+    stopTransferPoll();
     renderTransfer();
     toast('Session discarded');
   } catch (error) {
@@ -325,27 +417,32 @@ async function checkHealth() {
   }
 }
 
+function applyBackupText(text) {
+  const root = JSON.parse(text);
+  if (root.format !== 'pagerapp-backup' || Number(root.version) !== 1) {
+    throw new Error('not a PagerAPP backup');
+  }
+  const data = root.data || {};
+  const server = String(data.server_url || '').trim().replace(/\/+$/, '');
+  const uuid = String(data.pager_uuid || '').trim().toLowerCase();
+  if (!/^https?:\/\//.test(server) || !/^[0-9a-f-]{36}$/.test(uuid)) {
+    throw new Error('backup has no valid server/mailbox');
+  }
+  state.server = server;
+  state.uuid = uuid;
+  sessionStorage.setItem('pagerapp.server', server);
+  sessionStorage.setItem('pagerapp.uuid', uuid);
+  if (pairModal) pairModal.hide();
+  updateConnection();
+  $('#connectNote').textContent = 'Imported from the phone. The file never went to the Docker server.';
+  return { server, uuid };
+}
+
 function importBackupFile(file) {
   const reader = new FileReader();
   reader.onload = () => {
     try {
-      const root = JSON.parse(String(reader.result || ''));
-      if (root.format !== 'pagerapp-backup' || Number(root.version) !== 1) {
-        throw new Error('not a PagerAPP backup');
-      }
-      const data = root.data || {};
-      const server = String(data.server_url || '').trim().replace(/\/+$/, '');
-      const uuid = String(data.pager_uuid || '').trim().toLowerCase();
-      if (!/^https?:\/\//.test(server) || !/^[0-9a-f-]{36}$/.test(uuid)) {
-        throw new Error('backup has no valid server/mailbox');
-      }
-      state.server = server;
-      state.uuid = uuid;
-      sessionStorage.setItem('pagerapp.server', server);
-      sessionStorage.setItem('pagerapp.uuid', uuid);
-      if (pairModal) pairModal.hide();
-      updateConnection();
-      $('#connectNote').textContent = 'Imported locally. The file never went to the Docker server.';
+      applyBackupText(String(reader.result || ''));
       toast('Backup imported locally');
     } catch (error) {
       toast(`Backup import failed: ${error.message}`);
@@ -381,6 +478,8 @@ function bind() {
     state.uuid = '';
     state.pages = [];
     state.transfer = null;
+    state.transferKey = null;
+    stopTransferPoll();
     updateConnection();
     renderPages();
     renderTransfer();
@@ -409,6 +508,11 @@ state.transfer = sessionFromStorage();
 updateConnection();
 renderTransfer();
 if (!state.transfer) {
+  createSession();
+} else if (!state.uuid && !state.transferKey) {
+  // The private transfer key is deliberately memory-only. A reload before the phone has
+  // completed the handoff means this tab can no longer decrypt it; start a fresh session.
+  saveTransfer(null);
   createSession();
 } else if (!state.uuid && renewalDue()) {
   showPairing('renew');

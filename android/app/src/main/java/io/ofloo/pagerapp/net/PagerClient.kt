@@ -103,6 +103,24 @@ object PagerClient {
      * ~15s keep an idle connection alive, and the read timeout is set above that so a dead
      * connection surfaces as an exception instead of hanging forever.
      */
+    /**
+     * Hands an encrypted backup to a PagerAPP web session. The token is scoped to the one-time
+     * transfer session; the Docker server only receives ciphertext.
+     */
+    fun uploadWebHandoff(baseUrl: String, sessionId: String, token: String, armored: ByteArray) {
+        val url = "${baseUrl.trimEnd('/')}/api/session/$sessionId/upload"
+        val conn = open(url, "POST", token)
+        try {
+            conn.setRequestProperty("Content-Type", "application/octet-stream")
+            conn.setFixedLengthStreamingMode(armored.size)
+            conn.outputStream.use { it.write(armored) }
+            require(conn.responseCode in 200..299) { "web handoff HTTP ${conn.responseCode}" }
+            conn.inputStream.bufferedReader().use { it.readText() }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     fun streamEvents(serverUrl: String, uuid: String, onPage: (Page) -> Unit) {
         val conn = URL("$serverUrl/mailboxes/$uuid/events").openConnection() as HttpURLConnection
         conn.requestMethod = "GET"

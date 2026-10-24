@@ -166,6 +166,18 @@ async function routeApi(req, res, url) {
     return json(res, 200, { id: renewId, expires: session.expires, expires_at: new Date(session.expires).toISOString() });
   }
 
+  const statusId = sessionIdFromPath(url.pathname, '/status');
+  if (statusId && req.method === 'GET') {
+    const session = sessionFor(req, statusId);
+    if (!session) return json(res, 404, { error: 'unknown or expired session' });
+    return json(res, 200, {
+      id: statusId,
+      expires: session.expires,
+      uploaded: Boolean(session.blob),
+      bytes: session.blob ? session.blob.length : 0,
+    });
+  }
+
   const uploadId = sessionIdFromPath(url.pathname, '/upload');
   if (uploadId && req.method === 'POST') {
     const session = sessionFor(req, uploadId);
