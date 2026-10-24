@@ -113,10 +113,10 @@ fun SettingsScreen(
             val publicKey = uri?.getQueryParameter("pub")
             val base = uri?.let { "${it.scheme}://${it.authority}" }
             if (uri == null || uri.scheme !in listOf("http", "https") ||
-                uri.path != "/pair" || session.isNullOrBlank() ||
-                token.isNullOrBlank() || publicKey.isNullOrBlank() || base.isNullOrBlank()
+                session.isNullOrBlank() || token.isNullOrBlank() || base.isNullOrBlank()
             ) {
-                webStatus = "That is not a PagerAPP browser pairing code."
+                webStatus = "Not a browser pairing code (session/token missing). " +
+                    "Create a new code in the web console."
             } else {
                 webBusy = true
                 webStatus = "Encrypting the backup…"
@@ -124,7 +124,12 @@ fun SettingsScreen(
                     val result = withContext(Dispatchers.IO) {
                         runCatching {
                             val backup = store.exportBackup()
-                            val encrypted = Pgp.encrypt(backup, publicKey)
+                            val recipient = publicKey ?: PagerClient.webHandoffPublicKey(
+                                baseUrl = base,
+                                sessionId = session,
+                                token = token,
+                            )
+                            val encrypted = Pgp.encrypt(backup, recipient)
                             PagerClient.uploadWebHandoff(
                                 baseUrl = base,
                                 sessionId = session,

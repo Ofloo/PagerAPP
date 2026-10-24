@@ -241,8 +241,7 @@ function renderTransfer() {
   chip.className = `chip ${due ? 'bad' : 'ok'}`;
   $('#sessionExpiry').textContent = `expires ${new Date(transfer.expires).toLocaleString()}`;
   $('#sessionHint').textContent = 'Scan with PagerAPP to hand data to this tab. Private keys stay here.';
-  const pub = transfer.publicKey ? `&pub=${encodeURIComponent(transfer.publicKey)}` : '';
-  const url = `${location.origin}/pair?session=${encodeURIComponent(transfer.id)}&token=${encodeURIComponent(transfer.token)}${pub}`;
+  const url = `${location.origin}/pair?session=${encodeURIComponent(transfer.id)}&token=${encodeURIComponent(transfer.token)}`;
   const qr = qrcode(0, 'L');
   qr.addData(url);
   qr.make();
@@ -357,7 +356,11 @@ async function createSession() {
   try {
     document.querySelector('#pairTitle').textContent = 'Generating transfer key…';
     const transferKey = await generateTransferKey();
-    const response = await fetch('/api/session', { method: 'POST' });
+    const response = await fetch('/api/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publicKey: transferKey.publicArmor }),
+    });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const transfer = await response.json();
     state.transferKey = transferKey;

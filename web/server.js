@@ -60,7 +60,7 @@ function hash(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
-function newSession() {
+function newSession(publicKey = '') {
   const id = crypto.randomBytes(18).toString('base64url');
   const token = randomToken();
   const expires = Date.now() + SESSION_TTL_MS;
@@ -69,6 +69,7 @@ function newSession() {
     expires,
     blob: null,
     uploadedAt: null,
+    publicKey,
   });
   return { id, token, expires };
 }
@@ -148,8 +149,17 @@ async function routeApi(req, res, url) {
   }
 
   if (url.pathname === '/api/session' && req.method === 'POST') {
-    await readBody(req, 4096);
-    const created = newSession();
+    const body = await readBody(req, 8192);
+    let publicKey = '';
+    if (body.length) {
+      try {
+        publicKey = String(JSON.parse(body.toString('utf8')).publicKey || '');
+      } catch {
+        publicKey = '';
+      }
+    }
+    if (publicKey.length > 4096) return json(res, 400, { error: 'public key too large' });
+    const created = newSession(publicKey);
     return json(res, 201, {
       id: created.id,
       token: created.token,
@@ -164,6 +174,14 @@ async function routeApi(req, res, url) {
     if (!session) return json(res, 404, { error: 'unknown or expired session' });
     session.expires = Date.now() + SESSION_TTL_MS;
     return json(res, 200, { id: renewId, expires: session.expires, expires_at: new Date(session.expires).toISOString() });
+  }
+
+  const publicId = sessionIdFromPath(url.pathname, '/public');
+  if (publicId && req.method === 'GET') {
+    const session = sessionFor(req, publicId);
+    if (!session) return json(res, 404, { error: 'unknown or expired session' });
+    if (!session.publicKey) return json(res, 404, { error: 'no public key for session' });
+    return json(res, 200, { publicKey: session.publicKey });
   }
 
   const statusId = sessionIdFromPath(url.pathname, '/status');

@@ -107,6 +107,19 @@ object PagerClient {
      * Hands an encrypted backup to a PagerAPP web session. The token is scoped to the one-time
      * transfer session; the Docker server only receives ciphertext.
      */
+    /** Fetches the ephemeral transfer public key for a browser session. */
+    fun webHandoffPublicKey(baseUrl: String, sessionId: String, token: String): String {
+        val url = "${baseUrl.trimEnd('/')}/api/session/$sessionId/public"
+        val conn = open(url, "GET", token)
+        try {
+            require(conn.responseCode in 200..299) { "web public key HTTP ${conn.responseCode}" }
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            return JSONObject(body).getString("publicKey")
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     fun uploadWebHandoff(baseUrl: String, sessionId: String, token: String, armored: ByteArray) {
         val url = "${baseUrl.trimEnd('/')}/api/session/$sessionId/upload"
         val conn = open(url, "POST", token)
