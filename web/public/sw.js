@@ -1,4 +1,4 @@
-const CACHE = 'pagerapp-shell-v1';
+const CACHE = 'pagerapp-shell-v2';
 const SHELL = [
   '/', '/index.html', '/pair.html', '/css/salt.css',
   '/vendor/bootstrap.min.css', '/vendor/bootstrap.bundle.min.js',
@@ -16,5 +16,9 @@ self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
   if (url.pathname.startsWith('/api/')) return;
-  event.respondWith(caches.match(event.request).then((cached) => cached || fetch(event.request)));
+  event.respondWith(fetch(event.request).then((response) => {
+    const copy = response.clone();
+    caches.open(CACHE).then((cache) => cache.put(event.request, copy));
+    return response;
+  }).catch(() => caches.match(event.request)));
 });
