@@ -263,7 +263,7 @@ function showPairing(mode = 'initial') {
     title.textContent = 'Link this browser to your phone';
     intro.textContent = 'Open PagerAPP on your phone and scan this code. The app supplies the mailbox, server and session; the private key stays on the phone.';
   }
-  pairModal = pairModal || new bootstrap.Modal($('#pairModal'), { backdrop: 'static', keyboard: false });
+  pairModal = pairModal || new bootstrap.Modal($('#pairModal'), { backdrop: true, keyboard: true });
   pairModal.show();
 }
 
