@@ -14,6 +14,9 @@ The current web shell supports:
 - Reading queued pages, status/urgency labels and ACK.
 - The page immediately opens a pairing QR on initial load; PagerAPP supplies the mailbox/server.
   There is no manual server or UUID configuration in the web console.
+- A plain PagerAPP backup can also be imported locally with the file picker. Its `server_url` and
+  `pager_uuid` are read from the file, so every user keeps their own server; the file is never
+  uploaded to the Docker server.
 - With an existing session the handoff stays hidden until day 27 of the 30-day lease, when the
   renewal QR is offered. Ignoring it lets the session expire normally.
 - Creating/renewing/discarding an in-memory browser transfer session QR.

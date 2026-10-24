@@ -53,6 +53,7 @@
             <p class="small text-muted-warm">This console does not ask for a server or mailbox. PagerAPP supplies them when it scans the pairing code; the app remains in control of the keys.</p>
             <div class="d-flex gap-2 align-items-center flex-wrap">
               <button class="btn btn-salt" type="button" id="pairAction">Create pairing QR</button>
+              <button class="btn btn-outline-secondary" type="button" data-import-backup>Import backup file</button>
               <span class="form-note" id="connectNote">Not paired. Open PagerAPP and scan the code.</span>
             </div>
           </div>
@@ -154,8 +155,9 @@
           <p class="text-muted-warm small">Open PagerAPP on your phone and scan this code. The app supplies the mailbox, server and session; the private key stays on the phone.</p>
           <div class="qr-wrap qr-wrap-lg mx-auto"><div id="pairQrCode"></div></div>
           <div class="mono small text-center mt-2" id="pairExpiry">preparing session…</div>
-          <div class="d-flex justify-content-center gap-2 mt-3">
+          <div class="d-flex justify-content-center gap-2 mt-3 flex-wrap">
             <button class="btn btn-salt" type="button" id="pairAgain">New code</button>
+            <button class="btn btn-outline-secondary" type="button" data-import-backup>Import backup file</button>
             <button class="btn btn-outline-secondary" type="button" data-bs-dismiss="modal">Later</button>
           </div>
           <p class="small text-muted-warm text-center mt-3 mb-0">The code expires after 30 days; scanning is also how you renew the session.</p>
@@ -168,6 +170,7 @@
     <div id="toast" class="toast align-items-center" role="status"><div class="d-flex"><div class="toast-body" id="toastBody"></div><button type="button" class="btn-close me-2 m-auto" data-bs-dismiss="toast"></button></div></div>
   </div>
 
+  <input type="file" id="backupFile" accept=".json,application/json" hidden>
   <script src="/vendor/bootstrap.bundle.min.js"></script>
   <script src="/vendor/qrcode.js"></script>
   <script src="/js/app.js"></script>

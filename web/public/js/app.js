@@ -325,6 +325,36 @@ async function checkHealth() {
   }
 }
 
+function importBackupFile(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const root = JSON.parse(String(reader.result || ''));
+      if (root.format !== 'pagerapp-backup' || Number(root.version) !== 1) {
+        throw new Error('not a PagerAPP backup');
+      }
+      const data = root.data || {};
+      const server = String(data.server_url || '').trim().replace(/\/+$/, '');
+      const uuid = String(data.pager_uuid || '').trim().toLowerCase();
+      if (!/^https?:\/\//.test(server) || !/^[0-9a-f-]{36}$/.test(uuid)) {
+        throw new Error('backup has no valid server/mailbox');
+      }
+      state.server = server;
+      state.uuid = uuid;
+      sessionStorage.setItem('pagerapp.server', server);
+      sessionStorage.setItem('pagerapp.uuid', uuid);
+      if (pairModal) pairModal.hide();
+      updateConnection();
+      $('#connectNote').textContent = 'Imported locally. The file never went to the Docker server.';
+      toast('Backup imported locally');
+    } catch (error) {
+      toast(`Backup import failed: ${error.message}`);
+    }
+  };
+  reader.onerror = () => toast('Could not read the selected backup');
+  reader.readAsText(file);
+}
+
 function bind() {
   $('#themeToggle').addEventListener('click', () => {
     const current = document.documentElement.getAttribute('data-bs-theme');
@@ -338,6 +368,12 @@ function bind() {
   $('#createSession').addEventListener('click', createSession);
   $('#pairAction').addEventListener('click', createSession);
   $('#pairAgain').addEventListener('click', createSession);
+  $$('[data-import-backup]').forEach((button) => button.addEventListener('click', () => $('#backupFile').click()));
+  $('#backupFile').addEventListener('change', (event) => {
+    const file = event.target.files && event.target.files[0];
+    if (file) importBackupFile(file);
+    event.target.value = '';
+  });
   $('#renewSession').addEventListener('click', renewSession);
   $('#deleteSession').addEventListener('click', deleteSession);
   $('#clearLocal').addEventListener('click', () => {
