@@ -591,6 +591,10 @@ class Store(context: Context) {
         json.put("version", BACKUP_VERSION)
         json.put("created_at", System.currentTimeMillis())
         val data = JSONObject()
+        // These two values can be defaults that were never written to SharedPreferences; the
+        // web handoff needs them explicitly, so always include their effective values.
+        data.put(KEY_SERVER, serverUrl)
+        uuid?.takeIf { it.isNotBlank() }?.let { data.put(KEY_UUID, it) }
         for (key in BACKUP_KEYS) {
             if (!prefs.contains(key)) continue
             when (val value = prefs.all[key]) {
