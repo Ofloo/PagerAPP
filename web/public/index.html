@@ -47,24 +47,14 @@
         <div class="col-12 col-xl-7">
           <div class="panel h-100">
             <div class="panel-head">
-              <div><span class="panel-kicker">CONNECTION</span><h2>Mailbox</h2></div>
-              <span class="chip" id="mailboxChip">not connected</span>
+              <div><span class="panel-kicker">HANDOFF</span><h2>Pair this tab</h2></div>
+              <span class="chip" id="mailboxChip">waiting for app</span>
             </div>
-            <form id="connectForm" class="row g-2 align-items-end">
-              <div class="col-12 col-lg-6">
-                <label class="form-label" for="serverInput">PagerMCP server</label>
-                <input class="form-control mono" id="serverInput" value="https://pager.ofloo.io" spellcheck="false">
-              </div>
-              <div class="col-12 col-lg-6">
-                <label class="form-label" for="uuidInput">Mailbox UUID</label>
-                <input class="form-control mono" id="uuidInput" placeholder="paste the bearer UUID" spellcheck="false">
-              </div>
-              <div class="col-12 d-flex gap-2">
-                <button class="btn btn-salt" type="submit">Connect</button>
-                <button class="btn btn-outline-secondary" type="button" id="disconnectBtn">Disconnect</button>
-                <span class="form-note ms-auto" id="connectNote">Stored for this tab only.</span>
-              </div>
-            </form>
+            <p class="small text-muted-warm">This console does not ask for a server or mailbox. PagerAPP supplies them when it scans the pairing code; the app remains in control of the keys.</p>
+            <div class="d-flex gap-2 align-items-center flex-wrap">
+              <button class="btn btn-salt" type="button" id="pairAction">Create pairing QR</button>
+              <span class="form-note" id="connectNote">Not paired. Open PagerAPP and scan the code.</span>
+            </div>
           </div>
         </div>
         <div class="col-12 col-md-4 col-xl-2">
@@ -82,7 +72,7 @@
               <div><span class="panel-kicker">QUEUE</span><h2>Recent pages</h2></div>
               <button class="btn btn-sm btn-outline-secondary" id="refreshPages">Refresh</button>
             </div>
-            <div id="recentPages" class="empty-state">Connect a mailbox to read its pages.</div>
+            <div id="recentPages" class="empty-state">Pair with PagerAPP to load pages.</div>
           </div>
         </div>
         <div class="col-12 col-xl-5">
@@ -113,7 +103,7 @@
           <div><span class="panel-kicker">SYSTEM ALERTS</span><h2>Pages</h2></div>
           <div class="d-flex gap-2"><span class="chip" id="pagesCount">0</span><button class="btn btn-sm btn-outline-secondary" id="refreshPages2">Refresh</button></div>
         </div>
-        <div id="pagesList" class="empty-state">Connect a mailbox to read its pages.</div>
+        <div id="pagesList" class="empty-state">Pair with PagerAPP to load pages.</div>
       </div>
     </section>
 
@@ -154,6 +144,25 @@
     <span>PagerAPP web · stateless</span>
     <span class="mono">no Docker persistence</span>
   </footer>
+
+  <div class="modal fade" id="pairModal" tabindex="-1" aria-labelledby="pairTitle" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-body p-4">
+          <div class="panel-kicker">PAGERAPP HANDOFF</div>
+          <h2 class="h4 mt-2" id="pairTitle">Link this browser to your phone</h2>
+          <p class="text-muted-warm small">Open PagerAPP on your phone and scan this code. The app supplies the mailbox, server and session; the private key stays on the phone.</p>
+          <div class="qr-wrap qr-wrap-lg mx-auto"><div id="pairQrCode"></div></div>
+          <div class="mono small text-center mt-2" id="pairExpiry">preparing session…</div>
+          <div class="d-flex justify-content-center gap-2 mt-3">
+            <button class="btn btn-salt" type="button" id="pairAgain">New code</button>
+            <button class="btn btn-outline-secondary" type="button" data-bs-dismiss="modal">Later</button>
+          </div>
+          <p class="small text-muted-warm text-center mt-3 mb-0">The code expires after 30 days; scanning is also how you renew the session.</p>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <div class="toast-container position-fixed bottom-0 end-0 p-3">
     <div id="toast" class="toast align-items-center" role="status"><div class="d-flex"><div class="toast-body" id="toastBody"></div><button type="button" class="btn-close me-2 m-auto" data-bs-dismiss="toast"></button></div></div>

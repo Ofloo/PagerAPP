@@ -12,6 +12,8 @@ docker compose -f docker-compose.web.yml up --build
 The current web shell supports:
 - PagerMCP mailbox connection (server + bearer UUID) through a same-origin proxy.
 - Reading queued pages, status/urgency labels and ACK.
+- The page immediately opens a pairing QR on load; PagerAPP supplies the mailbox/server. There is
+  no manual server or UUID configuration in the web console.
 - Creating/renewing/discarding an in-memory browser transfer session QR.
 - Dark/light Salt-style console (Bootstrap 5, vendored CSS/JS).
 - Session data is never written to disk by the container.

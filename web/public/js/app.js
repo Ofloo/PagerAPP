@@ -85,10 +85,11 @@ function showView(name) {
 }
 
 function updateConnection() {
-  $('#serverInput').value = state.server;
-  $('#uuidInput').value = state.uuid;
-  $('#mailboxChip').textContent = state.uuid ? 'connected' : 'not connected';
+  $('#mailboxChip').textContent = state.uuid ? 'paired' : 'waiting for app';
   $('#mailboxChip').className = `chip ${state.uuid ? 'ok' : ''}`;
+  $('#connectNote').textContent = state.uuid
+    ? 'Paired through PagerAPP. This tab only.'
+    : 'Not paired. Open PagerAPP and scan the code.';
   if (state.uuid) loadPages();
 }
 
@@ -127,8 +128,8 @@ function renderPages() {
   recent.replaceChildren();
   list.replaceChildren();
   if (!state.uuid) {
-    recent.textContent = 'Connect a mailbox to read its pages.';
-    list.textContent = 'Connect a mailbox to read its pages.';
+    recent.textContent = 'Pair with PagerAPP to load pages.';
+    list.textContent = 'Pair with PagerAPP to load pages.';
     return;
   }
   if (!pages.length) {
@@ -225,7 +226,19 @@ function renderTransfer() {
   const qr = qrcode(0, 'M');
   qr.addData(url);
   qr.make();
-  $('#qrCode').innerHTML = qr.createSvgTag({ cellSize: 3, margin: 2 });
+  const svg = qr.createSvgTag({ cellSize: 3, margin: 2 });
+  $('#qrCode').innerHTML = svg;
+  const pairQr = $('#pairQrCode');
+  if (pairQr) pairQr.innerHTML = svg;
+  const pairExpiry = $('#pairExpiry');
+  if (pairExpiry) pairExpiry.textContent = `expires ${new Date(transfer.expires).toLocaleString()}`;
+}
+
+let pairModal = null;
+function showPairing() {
+  if (state.uuid) return;
+  pairModal = pairModal || new bootstrap.Modal($('#pairModal'), { backdrop: 'static', keyboard: false });
+  pairModal.show();
 }
 
 async function createSession() {
@@ -235,7 +248,8 @@ async function createSession() {
     const transfer = await response.json();
     saveTransfer(transfer);
     renderTransfer();
-    toast('Browser session created');
+    showPairing();
+    toast('Pairing code ready');
   } catch (error) {
     toast(`Could not create session: ${error.message}`);
   }
@@ -293,28 +307,11 @@ function bind() {
   $$('[data-theme-choice]').forEach((button) => button.addEventListener('click', () => setTheme(button.dataset.themeChoice)));
   $$('#mainNav .nav-link').forEach((button) => button.addEventListener('click', () => showView(button.dataset.view)));
   $$('.brand').forEach((link) => link.addEventListener('click', (event) => { event.preventDefault(); showView('overview'); }));
-  $('#connectForm').addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const server = $('#serverInput').value.trim().replace(/\/+$/, '');
-    const uuid = $('#uuidInput').value.trim().toLowerCase();
-    if (!/^[0-9a-f-]{36}$/.test(uuid)) { toast('That does not look like a mailbox UUID'); return; }
-    state.server = server;
-    state.uuid = uuid;
-    sessionStorage.setItem('pagerapp.server', server);
-    sessionStorage.setItem('pagerapp.uuid', uuid);
-    updateConnection();
-    $('#connectNote').textContent = 'Connected for this tab.';
-  });
-  $('#disconnectBtn').addEventListener('click', () => {
-    state.uuid = '';
-    state.pages = [];
-    sessionStorage.removeItem('pagerapp.uuid');
-    updateConnection();
-    renderPages();
-  });
   $('#refreshPages').addEventListener('click', loadPages);
   $('#refreshPages2').addEventListener('click', loadPages);
   $('#createSession').addEventListener('click', createSession);
+  $('#pairAction').addEventListener('click', createSession);
+  $('#pairAgain').addEventListener('click', createSession);
   $('#renewSession').addEventListener('click', renewSession);
   $('#deleteSession').addEventListener('click', deleteSession);
   $('#clearLocal').addEventListener('click', () => {
@@ -329,10 +326,29 @@ function bind() {
   });
 }
 
+window.addEventListener('error', (event) => {
+  fetch('/api/client-error', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message: event.message, source: event.filename, line: event.lineno }),
+  }).catch(() => {});
+});
+window.addEventListener('unhandledrejection', (event) => {
+  fetch('/api/client-error', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message: String(event.reason || 'unhandled rejection') }),
+  }).catch(() => {});
+});
+
 initTheme();
 bind();
 state.transfer = sessionFromStorage();
 updateConnection();
 renderTransfer();
+if (!state.uuid) {
+  if (state.transfer) showPairing();
+  else createSession();
+}
 checkHealth();
 setInterval(checkHealth, 30000);

@@ -134,3 +134,12 @@ body {
   .nav-pills { overflow-x: auto; flex-wrap: nowrap; max-width: 58vw; }
   .panel { padding: .85rem; }
 }
+
+.modal-content {
+  background: var(--salt-panel);
+  border: 1px solid var(--salt-line);
+  color: var(--salt-text);
+  border-radius: 8px;
+}
+.qr-wrap-lg { width: 250px; height: 250px; }
+.modal-backdrop.show { opacity: .72; }

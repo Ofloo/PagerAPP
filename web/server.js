@@ -127,6 +127,17 @@ async function proxyJson(req, res, targetUrl, method, body) {
 }
 
 async function routeApi(req, res, url) {
+  if (url.pathname === '/api/client-error' && req.method === 'POST') {
+    const body = await readBody(req, 16 * 1024);
+    try {
+      const payload = JSON.parse(body.toString('utf8'));
+      console.error('[client]', payload.message || 'client error', payload.source || '');
+    } catch {
+      console.error('[client] invalid error report');
+    }
+    return json(res, 204, {});
+  }
+
   if (url.pathname === '/api/health') {
     return json(res, 200, {
       ok: true,
@@ -249,6 +260,7 @@ const server = http.createServer(async (req, res) => {
     }
   } catch (error) {
     const status = Number(error.status) || 500;
+    console.error(`[error] ${req.method} ${url.pathname}:`, error && (error.stack || error.message || error));
     if (!res.headersSent) json(res, status, { error: status === 500 ? 'internal error' : error.message });
     else res.destroy();
   }
