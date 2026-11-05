@@ -157,6 +157,7 @@ async function proxyJson(req, res, targetUrl, method, body) {
     'user-agent': 'PagerAPP-web',
   };
   if (body !== undefined) headers['content-type'] = 'application/json';
+  if (method !== 'GET') console.log(`[proxy] ${method} ${url.pathname}`);
   const response = await fetch(url, {
     method,
     headers,
@@ -164,6 +165,9 @@ async function proxyJson(req, res, targetUrl, method, body) {
     redirect: 'error',
   });
   const text = await response.text();
+  if (response.status >= 400) {
+    console.error(`[proxy] ${method} ${url.pathname} -> ${response.status}: ${text.slice(0, 300)}`);
+  }
   res.writeHead(response.status, {
     'content-type': response.headers.get('content-type') || 'application/json; charset=utf-8',
     'cache-control': 'no-store',
@@ -354,6 +358,9 @@ async function routeApi(req, res, url) {
     const body = req.method === 'GET' || req.method === 'HEAD'
       ? undefined
       : await readBody(req, 128 * 1024).then((b) => b.length ? JSON.parse(b.toString('utf8')) : undefined);
+    if (action !== 'messages') {
+      console.log(`[mailbox] ${req.method} ${action} ${uuid.slice(0, 8)}`);
+    }
     return proxyJson(req, res, upstream.toString(), req.method, body);
   }
 

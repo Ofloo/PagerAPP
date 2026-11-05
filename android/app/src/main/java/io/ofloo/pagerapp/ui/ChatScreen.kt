@@ -62,6 +62,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Reply
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddAPhoto
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.AttachFile
@@ -81,6 +82,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -952,9 +954,9 @@ fun ChatScreen(
             }
         }
 
-        // No send button: Enter sends (the IME's action key too), and Shift+Enter inserts a
-        // newline, so the field keeps the full width. The filled pill shape follows the
-        // messenger convention; the border is transparent so only the surface reads.
+        // The attachment and camera buttons occupy the send slot while the field is empty; once
+        // there is text they are replaced by the send arrow. Enter is a plain newline now, so the
+        // keyboard's enter key inserts a line break and sending is always an explicit tap.
         OutlinedTextField(
             value = text,
             onValueChange = { text = it },
@@ -970,31 +972,25 @@ fun ChatScreen(
             ),
             trailingIcon = {
                 Row {
-                    IconButton(onClick = { attachmentPicker.launch("*/*") }) {
-                        Icon(Icons.Default.AttachFile, contentDescription = "Send attachment")
-                    }
-                    IconButton(onClick = { launchCamera() }) {
-                        Icon(Icons.Default.AddAPhoto, contentDescription = "Take photo")
+                    if (text.isBlank()) {
+                        IconButton(onClick = { attachmentPicker.launch("*/*") }) {
+                            Icon(Icons.Default.AttachFile, contentDescription = "Send attachment")
+                        }
+                        IconButton(onClick = { launchCamera() }) {
+                            Icon(Icons.Default.AddAPhoto, contentDescription = "Take photo")
+                        }
+                    } else {
+                        IconButton(onClick = { send() }) {
+                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+                        }
                     }
                 }
             },
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-            keyboardActions = KeyboardActions(onSend = { send() }),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(horizontal = 8.dp, vertical = 6.dp)
-                .onPreviewKeyEvent { event ->
-                    if (event.type == KeyEventType.KeyDown && event.key == Key.Enter) {
-                        if (event.isShiftPressed) false   // Shift+Enter: newline
-                        else {
-                            send()                        // Enter: send
-                            true
-                        }
-                    } else {
-                        false
-                    }
-                },
+                .padding(horizontal = 8.dp, vertical = 6.dp),
         )
 
         fullscreenPhoto?.let { path ->
@@ -1082,14 +1078,17 @@ private fun PhotoBubble(path: String) {
         }
     }
     bitmap?.let {
+        val ratio = it.width.toFloat() / it.height.toFloat()
+        val maxSide = 260.dp
+        val width = if (ratio >= 1f) maxSide else maxSide * ratio
+        val height = if (ratio >= 1f) maxSide / ratio else maxSide
         Image(
             bitmap = it,
             contentDescription = "Photo",
-            contentScale = ContentScale.Fit,
+            contentScale = ContentScale.Crop,
             modifier = Modifier
-                .widthIn(max = 260.dp)
-                .heightIn(max = 260.dp)
-                .padding(bottom = 4.dp),
+                .size(width, height)
+                .clip(RoundedCornerShape(12.dp)),
         )
     } ?: Text(tr("Photo"), color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
