@@ -8,7 +8,11 @@ import io.ofloo.pagerapp.shared.ContactKind
 import io.ofloo.pagerapp.shared.LEVEL_NORMAL
 import io.ofloo.pagerapp.shared.Pgp
 import io.ofloo.pagerapp.shared.Page
+import io.ofloo.pagerapp.shared.P2PEnvelope
 import io.ofloo.pagerapp.shared.PagerConfig
+import io.ofloo.pagerapp.shared.p2pRouteHash
+import io.ofloo.pagerapp.shared.defaultLevelOrder
+import io.ofloo.pagerapp.shared.sanitizeLevelOrder
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
@@ -18,6 +22,8 @@ data class FcmLease(
     val mailbox: String,
     val subscriptionId: String,
     val expiresAt: Long,
+    /** The route hash used when this lease was registered (null while UUID mode is active). */
+    val route: String? = null,
 )
 
 /** An extra PagerMCP mailbox used as a page address, e.g. one per logging source. */
@@ -25,6 +31,7 @@ data class PageMailbox(
     val name: String,
     val uuid: String,
     val serverUrl: String,
+    val levelOrder: List<String> = defaultLevelOrder(),
 ) {
     val id: String get() = "$serverUrl|$uuid"
 }
@@ -101,10 +108,131 @@ class Store(context: Context) {
         get() = prefs.getString(KEY_PUSH_ENDPOINT, "")!!
         set(v) = prefs.edit().putString(KEY_PUSH_ENDPOINT, v).apply()
 
+    /**
+     * When the current browser handoff session ends. While this is in the future the phone owns a
+     * PagerMCP webclient-mode lease, so it must not delete mail before the browser has its copy.
+     */
+    var webSessionExpiresAt: Long
+        get() = prefs.getLong(KEY_WEB_SESSION_EXPIRES, 0L)
+        set(v) = prefs.edit().putLong(KEY_WEB_SESSION_EXPIRES, v).apply()
+
+    fun webSessionActive(now: Long = System.currentTimeMillis() / 1000L): Boolean =
+        webSessionExpiresAt > now
+
+    fun clearWebSession() {
+        prefs.edit().remove(KEY_WEB_SESSION_EXPIRES).apply()
+    }
+
     /** Wake-ups through Google's push service instead of our own connection. Off unless asked. */
     var fcmEnabled: Boolean
         get() = prefs.getBoolean(KEY_FCM, false)
         set(v) = prefs.edit().putBoolean(KEY_FCM, v).apply()
+
+    /** User opt-in for P2P envelopes; normal messages are unchanged when this is off. */
+    var p2pModeEnabled: Boolean
+        get() = prefs.getBoolean(KEY_P2P, false)
+        set(v) = prefs.edit().putBoolean(KEY_P2P, v).apply()
+
+    /** Last /settings p2p.enabled value; P2P fields are only sent when the server supports them. */
+    var p2pServerEnabled: Boolean
+        get() = prefs.getBoolean(KEY_P2P_SERVER, false)
+        set(v) = prefs.edit().putBoolean(KEY_P2P_SERVER, v).apply()
+
+    /** The server's maximum accepted message age, cached from /settings. */
+    var p2pMaxAgeSeconds: Long
+        get() = prefs.getLong(KEY_P2P_MAX_AGE, 0L)
+        set(v) = prefs.edit().putLong(KEY_P2P_MAX_AGE, v).apply()
+
+    /**
+     * Push-subscription identity. Defaults to the mailbox UUID; the server can advertise the
+     * anonymised route hash (optionally rotating) and the client follows it automatically.
+     */
+    var pushIdentityMode: String
+        get() = prefs.getString(KEY_PUSH_IDENTITY, "uuid") ?: "uuid"
+        set(v) = prefs.edit().putString(KEY_PUSH_IDENTITY, v).apply()
+
+    var pushIdentityPeriodSeconds: Long
+        get() = prefs.getLong(KEY_PUSH_IDENTITY_PERIOD, 0L)
+        set(v) = prefs.edit().putLong(KEY_PUSH_IDENTITY_PERIOD, v).apply()
+
+    /**
+     * Server clock minus device clock, in seconds, from the last `GET /settings`. A rotating push
+     * identity has to roll over on the server's period boundaries, not the phone's.
+     */
+    var serverClockOffsetSeconds: Long
+        get() = prefs.getLong(KEY_SERVER_CLOCK_OFFSET, 0L)
+        set(v) = prefs.edit().putLong(KEY_SERVER_CLOCK_OFFSET, v).apply()
+
+    /** Server-aligned "now" used for rotating identities. */
+    private fun pushNowMillis(): Long =
+        (System.currentTimeMillis() / 1000L + serverClockOffsetSeconds) * 1000L
+
+    /** The routes to send with a push subscription, or null while the UUID contract is in use. */
+    fun pushRoutes(mailbox: String): List<String>? =
+        if (pushIdentityMode == io.ofloo.pagerapp.shared.PushIdentity.MODE_HASH) {
+            io.ofloo.pagerapp.shared.PushIdentity.rotatingRoutes(
+                mailbox,
+                pushIdentityPeriodSeconds,
+                pushNowMillis(),
+            )
+        } else {
+            null
+        }
+
+    /** The current bucket's route, used to notice a rollover and renew in time. */
+    fun pushRoute(mailbox: String): String? =
+        if (pushIdentityMode == io.ofloo.pagerapp.shared.PushIdentity.MODE_HASH) {
+            io.ofloo.pagerapp.shared.PushIdentity.rotatingRoute(
+                mailbox,
+                pushIdentityPeriodSeconds,
+                pushNowMillis(),
+            )
+        } else {
+            null
+        }
+
+    /** Applies the server's advertised push identity (older servers keep reporting nothing). */
+    fun cachePushIdentity(settings: io.ofloo.pagerapp.net.ServerSettings) {
+        // Sanity-clamp: a bogus clock must not make the route jump buckets.
+        val serverTime = settings.serverTimeSeconds
+        val offset = if (serverTime != null) {
+            val raw = serverTime - System.currentTimeMillis() / 1000L
+            raw.coerceIn(-86_400L * 365L, 86_400L * 365L)
+        } else {
+            serverClockOffsetSeconds
+        }
+        prefs.edit()
+            .putString(KEY_PUSH_IDENTITY, settings.pushIdentityMode)
+            .putLong(KEY_PUSH_IDENTITY_PERIOD, settings.pushIdentityPeriodSeconds)
+            .putLong(KEY_SERVER_CLOCK_OFFSET, offset)
+            .apply()
+    }
+
+    /** When `/settings` was last fetched, so the identity/clock does not need a poll every time. */
+    var settingsCheckedAt: Long
+        get() = prefs.getLong(KEY_SETTINGS_CHECKED, 0L)
+        set(v) = prefs.edit().putLong(KEY_SETTINGS_CHECKED, v).apply()
+
+    fun cacheP2pSettings(settings: io.ofloo.pagerapp.net.ServerSettings) {
+        prefs.edit()
+            .putBoolean(KEY_P2P_SERVER, settings.p2pEnabled)
+            .putLong(KEY_P2P_MAX_AGE, settings.p2pMaxMessageAgeSeconds)
+            .apply()
+    }
+
+    /**
+     * Mailboxes this installation owns and polls: the private mailbox, every page address and
+     * every contact channel inbox. Traffic to one of these never needs a gateway, and a P2P
+     * envelope addressed to one of them is delivered locally.
+     */
+    fun localMailboxIds(): Set<String> = buildSet {
+        uuid?.takeIf { it.isNotBlank() }?.let(::add)
+        pageMailboxes().map { it.uuid }.filter { it.isNotBlank() }.forEach(::add)
+        contacts().map { it.inbox }.filter { it.isNotBlank() }.forEach(::add)
+    }
+
+    fun isLocalMailbox(id: String?): Boolean =
+        !id.isNullOrBlank() && id in localMailboxIds()
 
     /** When we last checked whether our mailbox really has an fcm subscription. */
     var fcmCheckedAt: Long
@@ -124,7 +252,13 @@ class Store(context: Context) {
                 val mailbox = item.optString("mailbox")
                 val id = item.optString("id")
                 if (server.isBlank() || mailbox.isBlank() || id.isBlank()) null
-                else FcmLease(server, mailbox, id, item.optLong("expires"))
+                else FcmLease(
+                    server,
+                    mailbox,
+                    id,
+                    item.optLong("expires"),
+                    item.optString("route").takeIf { it.isNotBlank() && it != "null" },
+                )
             }
         }.getOrDefault(emptyList())
         val primary = uuid
@@ -155,7 +289,8 @@ class Store(context: Context) {
                         .put("server", lease.serverUrl)
                         .put("mailbox", lease.mailbox)
                         .put("id", lease.subscriptionId)
-                        .put("expires", lease.expiresAt),
+                        .put("expires", lease.expiresAt)
+                        .put("route", lease.route),
                 )
             }
         }
@@ -323,6 +458,9 @@ class Store(context: Context) {
                     name = o.optString("name").ifBlank { "Page address" },
                     uuid = uuid,
                     serverUrl = server,
+                    levelOrder = o.optJSONArray("level_order")?.let { levels ->
+                        sanitizeLevelOrder((0 until levels.length()).map { levels.optString(it) })
+                    } ?: defaultLevelOrder(),
                 )
             }.distinctBy { it.id }
         } catch (_: Exception) {
@@ -344,6 +482,14 @@ class Store(context: Context) {
         savePageMailboxes(pageMailboxes().filterNot { it.id == id })
     }
 
+    /** Stores a page address's own level order (the only per-address rule preference). */
+    fun setPageMailboxLevelOrder(id: String, levelOrder: List<String>) {
+        val clean = sanitizeLevelOrder(levelOrder)
+        savePageMailboxes(
+            pageMailboxes().map { if (it.id == id) it.copy(levelOrder = clean) else it },
+        )
+    }
+
     private fun savePageMailboxes(list: List<PageMailbox>) {
         val arr = JSONArray()
         list.forEach { mailbox ->
@@ -351,7 +497,8 @@ class Store(context: Context) {
                 JSONObject()
                     .put("name", mailbox.name)
                     .put("uuid", mailbox.uuid)
-                    .put("server", mailbox.serverUrl),
+                    .put("server", mailbox.serverUrl)
+                    .put("level_order", JSONArray(mailbox.levelOrder)),
             )
         }
         prefs.edit().putString(KEY_PAGE_MAILBOXES, arr.toString()).apply()
@@ -536,6 +683,153 @@ class Store(context: Context) {
         prefs.edit().putString(KEY_HISTORY, arr.toString()).apply()
     }
 
+    /**
+     * Collapses rows that describe the same chat message into one. The same message can be
+     * delivered over P2P and later arrive through the gateway; both copies carry the same `mid`.
+     * Flags are merged so a receipt from either copy is not lost.
+     */
+    fun collapseDuplicateMids() {
+        val items = history()
+        val index = HashMap<Pair<String, String>, Int>()
+        val out = ArrayList<HistoryEntry>(items.size)
+        for (entry in items) {
+            val mid = entry.mid
+            val from = entry.from
+            if (mid.isNullOrBlank() || from.isNullOrBlank()) {
+                out.add(entry)
+                continue
+            }
+            val key = mid to from
+            val at = index[key]
+            if (at == null) {
+                index[key] = out.size
+                out.add(entry)
+                continue
+            }
+            val kept = out[at]
+            out[at] = kept.copy(
+                acked = kept.acked || entry.acked,
+                remoteDelivered = kept.remoteDelivered || entry.remoteDelivered,
+                delivered = kept.delivered || entry.delivered,
+                pending = kept.pending && entry.pending,
+                imagePath = kept.imagePath ?: entry.imagePath,
+                filePath = kept.filePath ?: entry.filePath,
+                fileName = kept.fileName ?: entry.fileName,
+                fileMime = kept.fileMime ?: entry.fileMime,
+                sig = kept.sig ?: entry.sig,
+                signatureValid = kept.signatureValid ?: entry.signatureValid,
+            )
+        }
+        if (out.size == items.size) return
+        val arr = JSONArray()
+        out.forEach { arr.put(it.toJson()) }
+        prefs.edit().putString(KEY_HISTORY, arr.toString()).apply()
+    }
+
+    /** P2P envelopes waiting for a peer, a gateway, or expiry. */
+    fun p2pQueue(): List<P2PEnvelope> {
+        val raw = prefs.getString(KEY_P2P_QUEUE, null) ?: return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            (0 until arr.length())
+                .map { i -> p2pEnvelopeFromJson(arr.getJSONObject(i)) }
+                .filter { it.id.isNotBlank() && it.expiresAt > System.currentTimeMillis() / 1000L }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    fun enqueueP2P(envelope: P2PEnvelope) {
+        val items = (p2pQueue().filterNot { it.id == envelope.id } + envelope)
+            .sortedBy { it.createdAt }
+            .takeLast(MAX_P2P_QUEUE)
+        val arr = JSONArray()
+        items.forEach { arr.put(it.toJson()) }
+        prefs.edit().putString(KEY_P2P_QUEUE, arr.toString()).apply()
+    }
+
+    fun removeP2P(id: String) {
+        val items = p2pQueue().filterNot { it.id == id }
+        val arr = JSONArray()
+        items.forEach { arr.put(it.toJson()) }
+        prefs.edit().putString(KEY_P2P_QUEUE, arr.toString()).apply()
+    }
+
+    fun markP2PDelivered(id: String) {
+        removeP2P(id)
+        rewriteHistory {
+            if (it.mid == id) it.copy(pending = false, delivered = true) else it
+        }
+    }
+
+    /**
+     * A peer confirmed custody. The envelope stays in the P2P queue (it may still need a gateway),
+     * but it is no longer "waiting on this phone" — the clock clears and the bubble shows the
+     * underway envelope until a delivery receipt arrives.
+     */
+    fun markP2PCustody(id: String) {
+        rewriteHistory {
+            if (it.mid == id) it.copy(pending = false, delivered = false) else it
+        }
+    }
+
+    /** Route hashes of every mailbox this installation owns; safe to keep locally. */
+    fun localRouteHashes(): Set<String> = localMailboxIds().map(::p2pRouteHash).toSet()
+
+    fun ownRouteHash(): String = uuid?.takeIf { it.isNotBlank() }?.let(::p2pRouteHash).orEmpty()
+
+    /** Messages built while the gateway was unreachable, waiting for a retry. */
+    fun queuedSends(): List<QueuedSend> {
+        val raw = prefs.getString(KEY_OUTBOX, null) ?: return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).map { i -> QueuedSend.fromJson(arr.getJSONObject(i)) }
+                .sortedBy { it.createdAt }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    fun enqueueSend(item: QueuedSend) {
+        val items = (queuedSends().filterNot { it.id == item.id } + item)
+            .sortedBy { it.createdAt }
+            .takeLast(MAX_OUTBOX)
+        val arr = JSONArray()
+        items.forEach { arr.put(it.toJson()) }
+        prefs.edit().putString(KEY_OUTBOX, arr.toString()).apply()
+    }
+
+    fun failQueuedSend(id: String, error: String?) {
+        val items = queuedSends().map {
+            if (it.id == id) it.copy(attempts = it.attempts + 1, lastError = error) else it
+        }
+        val arr = JSONArray()
+        items.forEach { arr.put(it.toJson()) }
+        prefs.edit().putString(KEY_OUTBOX, arr.toString()).apply()
+    }
+
+    fun completeQueuedSend(id: String) {
+        removeQueuedSend(id)
+        // The optimistic history row is the same id that was queued; flip it to sent.
+        rewriteHistory {
+            if (it.id == id) it.copy(pending = false, delivered = true, sendError = null) else it
+        }
+    }
+
+    fun failQueuedSendPermanent(id: String, error: String?) {
+        removeQueuedSend(id)
+        rewriteHistory {
+            if (it.id == id) it.copy(pending = false, delivered = false, sendError = error) else it
+        }
+    }
+
+    fun removeQueuedSend(id: String) {
+        val items = queuedSends().filterNot { it.id == id }
+        val arr = JSONArray()
+        items.forEach { arr.put(it.toJson()) }
+        prefs.edit().putString(KEY_OUTBOX, arr.toString()).apply()
+    }
+
     /** Marks one history entry as acknowledged (does not touch the server). */
     fun markAcked(id: String) {
         rewriteHistory { if (it.id == id) it.copy(acked = true) else it }
@@ -546,6 +840,13 @@ class Store(context: Context) {
         if (mid.isBlank()) return
         rewriteHistory {
             if (it.mid == mid && !it.acked) it.copy(acked = true) else it
+        }
+    }
+
+    fun markDeliveredByMid(mid: String) {
+        if (mid.isBlank()) return
+        rewriteHistory {
+            if (it.mid == mid && !it.remoteDelivered) it.copy(remoteDelivered = true) else it
         }
     }
 
@@ -568,6 +869,7 @@ class Store(context: Context) {
 
     /** Removes one history entry for good. */
     fun deleteEntry(id: String) {
+        removeQueuedSend(id)
         rewriteHistory { if (it.id == id) null else it }
     }
 
@@ -625,8 +927,13 @@ class Store(context: Context) {
         edit.remove(KEY_PUSH_ENDPOINT)
         edit.remove(KEY_FCM_TOKEN)
         edit.remove(KEY_FCM_LEASES)
+        edit.remove(KEY_PUSH_IDENTITY)
+        edit.remove(KEY_PUSH_IDENTITY_PERIOD)
+        edit.remove(KEY_SERVER_CLOCK_OFFSET)
+        edit.remove(KEY_SETTINGS_CHECKED)
         edit.remove(KEY_FCM_CHECKED)
         edit.remove(KEY_PENDING_CONTACT)
+        edit.remove(KEY_WEB_SESSION_EXPIRES)
 
         for (key in BACKUP_KEYS) {
             if (!data.has(key)) continue
@@ -682,7 +989,15 @@ class Store(context: Context) {
         private const val KEY_FCM = "fcm_enabled"
         private const val KEY_FCM_CHECKED = "fcm_checked_at"
         private const val KEY_FCM_TOKEN = "fcm_token"
+        private const val KEY_P2P = "p2p_enabled"
+        private const val KEY_P2P_SERVER = "p2p_server_enabled"
+        private const val KEY_P2P_MAX_AGE = "p2p_max_age_seconds"
         private const val KEY_FCM_LEASES = "fcm_leases"
+        private const val KEY_PUSH_IDENTITY = "push_identity"
+        private const val KEY_PUSH_IDENTITY_PERIOD = "push_identity_period_seconds"
+        private const val KEY_SERVER_CLOCK_OFFSET = "server_clock_offset_seconds"
+        private const val KEY_SETTINGS_CHECKED = "settings_checked_at"
+        private const val KEY_WEB_SESSION_EXPIRES = "web_session_expires"
         private const val KEY_BITS = "pgp_bits"
 
         /** 8192 by request; generating that on a phone can take minutes, so it is changeable. */
@@ -697,6 +1012,10 @@ class Store(context: Context) {
         private const val KEY_ALARM = "alarm_polling"
         private const val KEY_SEEN = "seen_ids"
         private const val KEY_HISTORY = "history"
+        private const val KEY_OUTBOX = "outbox"
+        private const val KEY_P2P_QUEUE = "p2p_queue"
+        private const val MAX_OUTBOX = 200
+        private const val MAX_P2P_QUEUE = 5000
 
         private const val BACKUP_FORMAT = "pagerapp-backup"
         private const val BACKUP_VERSION = 1
@@ -704,7 +1023,7 @@ class Store(context: Context) {
             KEY_SERVER, KEY_UUID, KEY_NAME, KEY_THEME, KEY_LANGUAGE, KEY_ALT_SERVER, KEY_PHOTO_SHARE,
             KEY_PUB, KEY_SEC, KEY_FPR, KEY_EXP, KEY_EXP_MONTHS, KEY_BITS,
             KEY_CONTACTS, KEY_PAGE_MAILBOXES, KEY_POLL, KEY_CONFIG, KEY_BYPASS, KEY_SILENCE,
-            KEY_RELIABLE, KEY_ALARM, KEY_PUSH_ENABLED, KEY_FCM, KEY_SEEN, KEY_HISTORY,
+            KEY_RELIABLE, KEY_ALARM, KEY_PUSH_ENABLED, KEY_FCM, KEY_P2P, KEY_SEEN, KEY_HISTORY,
         )
 
         /** Preference keys whose change should refresh the Pages list. */
@@ -712,6 +1031,41 @@ class Store(context: Context) {
 
         /** Preference keys whose change should refresh the Contacts list. */
         val CONTACT_KEYS = setOf(KEY_CONTACTS)
+    }
+}
+
+/** An outgoing page held locally until the PagerMCP gateway answers again. */
+data class QueuedSend(
+    val id: String,
+    val historyId: String,
+    val serverUrl: String,
+    val mailbox: String,
+    val payloadJson: String,
+    val createdAt: Double,
+    val attempts: Int = 0,
+    val lastError: String? = null,
+) {
+    fun toJson(): JSONObject = JSONObject()
+        .put("id", id)
+        .put("history_id", historyId)
+        .put("server", serverUrl)
+        .put("mailbox", mailbox)
+        .put("payload", payloadJson)
+        .put("created_at", createdAt)
+        .put("attempts", attempts)
+        .put("last_error", lastError)
+
+    companion object {
+        fun fromJson(o: JSONObject) = QueuedSend(
+            id = o.optString("id"),
+            historyId = o.optString("history_id"),
+            serverUrl = o.optString("server"),
+            mailbox = o.optString("mailbox"),
+            payloadJson = o.optString("payload"),
+            createdAt = o.optDouble("created_at", 0.0),
+            attempts = o.optInt("attempts", 0),
+            lastError = o.optString("last_error").takeIf { it.isNotEmpty() && it != "null" },
+        )
     }
 }
 
@@ -723,6 +1077,17 @@ data class HistoryEntry(
     val jobId: String?,
     val project: String?,
     val message: String?,
+    val logs: String? = null,
+    val replyTo: String? = null,
+    val replyPreview: String? = null,
+    val replyFrom: String? = null,
+    val replyFromName: String? = null,
+    /** True once a delivery receipt for this outgoing mid arrived from the peer's phone. */
+    val remoteDelivered: Boolean = false,
+    /** Detached signature over the plaintext; null for legacy unsigned messages. */
+    val sig: String? = null,
+    /** True/false when a signature was present and checked, null when unsigned. */
+    val signatureValid: Boolean? = null,
     val createdAt: Double,
     val ackUuid: String?,
     val replyUuid: String? = null,
@@ -742,6 +1107,10 @@ data class HistoryEntry(
     /** Key size of the OpenPGP key that protected the body, when known. */
     val keyBits: Int? = null,
     val delivered: Boolean,
+    /** True while an outgoing message is waiting for the gateway. */
+    val pending: Boolean = false,
+    /** Set when the gateway permanently rejected a queued message. */
+    val sendError: String? = null,
     val from: String? = null,
     val fromName: String? = null,
     val acked: Boolean = false,
@@ -758,6 +1127,14 @@ data class HistoryEntry(
         .put("job", jobId)
         .put("project", project)
         .put("message", message)
+        .put("logs", logs)
+        .put("reply_to", replyTo)
+        .put("reply_preview", replyPreview)
+        .put("reply_from", replyFrom)
+        .put("reply_from_name", replyFromName)
+        .put("remote_delivered", remoteDelivered)
+        .put("sig", sig)
+        .put("signature_valid", signatureValid)
         .put("created_at", createdAt)
         .put("ack_uuid", ackUuid)
         .put("reply_uuid", replyUuid)
@@ -772,6 +1149,8 @@ data class HistoryEntry(
         .put("received_at", receivedAt)
         .put("key_bits", keyBits)
         .put("delivered", delivered)
+        .put("pending", pending)
+        .put("send_error", sendError)
         .put("from", from)
         .put("from_name", fromName)
         .put("acked", acked)
@@ -787,6 +1166,14 @@ data class HistoryEntry(
             jobId = o.optString("job").takeIf { it.isNotEmpty() && it != "null" },
             project = o.optString("project").takeIf { it.isNotEmpty() && it != "null" },
             message = o.optString("message").takeIf { it.isNotEmpty() && it != "null" },
+            logs = o.optString("logs").takeIf { it.isNotEmpty() && it != "null" },
+            replyTo = o.optString("reply_to").takeIf { it.isNotEmpty() && it != "null" },
+            replyPreview = o.optString("reply_preview").takeIf { it.isNotEmpty() && it != "null" },
+            replyFrom = o.optString("reply_from").takeIf { it.isNotEmpty() && it != "null" },
+            replyFromName = o.optString("reply_from_name").takeIf { it.isNotEmpty() && it != "null" },
+            remoteDelivered = o.optBoolean("remote_delivered", false),
+            sig = o.optString("sig").takeIf { it.isNotEmpty() && it != "null" },
+            signatureValid = if (o.has("signature_valid")) o.optBoolean("signature_valid") else null,
             createdAt = o.optDouble("created_at", 0.0),
             ackUuid = o.optString("ack_uuid").takeIf { it.isNotEmpty() && it != "null" },
             replyUuid = o.optString("reply_uuid").takeIf { it.isNotEmpty() && it != "null" },
@@ -801,6 +1188,8 @@ data class HistoryEntry(
             receivedAt = o.optDouble("received_at", 0.0).takeIf { it > 0.0 },
             keyBits = o.optInt("key_bits", 0).takeIf { it > 0 },
             delivered = o.optBoolean("delivered", false),
+            pending = o.optBoolean("pending", false),
+            sendError = o.optString("send_error").takeIf { it.isNotEmpty() && it != "null" },
             from = o.optString("from").takeIf { it.isNotEmpty() && it != "null" },
             fromName = o.optString("from_name").takeIf { it.isNotEmpty() && it != "null" },
             acked = o.optBoolean("acked", false),
@@ -821,6 +1210,7 @@ data class HistoryEntry(
             fileMime: String? = null,
             receivedAt: Double? = null,
             keyBits: Int? = null,
+            signatureValid: Boolean? = null,
         ) = HistoryEntry(
             id = page.id,
             status = page.status,
@@ -828,6 +1218,12 @@ data class HistoryEntry(
             jobId = page.jobId,
             project = page.project,
             message = page.message,
+            logs = page.logs,
+            replyTo = page.replyTo,
+            replyPreview = page.replyPreview,
+            replyFrom = page.replyFrom,
+            replyFromName = page.replyFromName,
+            sig = page.sig,
             createdAt = if (page.createdAt > 0.0) page.createdAt else Instant.now().epochSecond.toDouble(),
             ackUuid = page.ackUuid,
             replyUuid = page.replyUuid,
@@ -841,6 +1237,7 @@ data class HistoryEntry(
             fileMime = fileMime,
             receivedAt = receivedAt,
             keyBits = keyBits,
+            signatureValid = signatureValid,
             delivered = delivered,
             from = page.from,
             fromName = page.fromName,

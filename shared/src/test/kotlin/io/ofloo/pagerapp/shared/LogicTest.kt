@@ -43,7 +43,7 @@ class DefaultRuleTest {
 class LevelOrderTest {
     @Test
     fun defaultsToTheFamiliarProLogDisplayOrder() {
-        assertEquals(listOf("info", "warning", "alarm", "critical", "debug"), defaultLevelOrder())
+        assertEquals(listOf("debug", "info", "warning", "alarm", "critical"), defaultLevelOrder())
     }
 
     @Test
@@ -227,6 +227,73 @@ class PageParserTest {
         assertEquals("build-1", p.jobId)
         assertEquals("high", p.prio)
         assertEquals("peer-uuid", p.ackUuid)
+    }
+
+    @Test
+    fun parsesQuoteReplyMetadata() {
+        val page = PageParser.parse(
+            mapOf(
+                "id" to "m1",
+                "status" to 10,
+                "reply_to" to "mid-42",
+                "reply_preview" to "earlier text",
+                "reply_from" to "peer-sid",
+                "reply_from_name" to "Peer",
+            ),
+        )
+        assertEquals("mid-42", page.replyTo)
+        assertEquals("earlier text", page.replyPreview)
+        assertEquals("peer-sid", page.replyFrom)
+        assertEquals("Peer", page.replyFromName)
+    }
+
+    @Test
+    fun acceptsCommonMailGatewayAliases() {
+        val page = PageParser.parse(
+            mapOf(
+                "id" to "mail-1",
+                "subject" to "Build failed",
+                "body" to "The deployment job exited with status 2.",
+                "project" to "CI gateway",
+                "job_id" to "mail-42",
+            ),
+        )
+        assertEquals("Build failed", page.message)
+        assertEquals("The deployment job exited with status 2.", page.logs)
+        assertEquals("CI gateway", page.project)
+        assertEquals("mail-42", page.jobId)
+        assertEquals(1, page.status)
+    }
+
+    @Test
+    fun explicitMessageBeatsMailAliases() {
+        val page = PageParser.parse(
+            mapOf("id" to "m", "message" to "canonical", "subject" to "ignored", "body" to "ignored"),
+        )
+        assertEquals("canonical", page.message)
+        assertEquals(null, page.logs)
+    }
+
+    @Test
+    fun parsesDeliveryReceiptsInsteadOfShowingThemAsEmptyMessages() {
+        val page = PageParser.parse(
+            mapOf("id" to "receipt-1", "status" to 10, "from" to "peer", "delivered" to "mid-out"),
+        )
+        assertEquals("mid-out", page.deliveredMid)
+        assertEquals(null, page.message)
+        assertEquals(null, page.sig)
+    }
+
+    @Test
+    fun parsesWebclientReadCopyFlag() {
+        val read = PageParser.parse(mapOf("id" to "m1", "status" to 3, "acked" to true))
+        val unread = PageParser.parse(mapOf("id" to "m2", "status" to 3, "acked" to false))
+        val legacy = PageParser.parse(mapOf("id" to "m3", "status" to 3))
+        assertEquals(true, read.acked)
+        assertEquals(false, unread.acked)
+        assertEquals(null, legacy.acked)
+        assertEquals(true, PageParser.parse(mapOf("id" to "m4", "self_copy" to true)).selfCopy)
+        assertEquals(false, PageParser.parse(mapOf("id" to "m5")).selfCopy)
     }
 
     @Test

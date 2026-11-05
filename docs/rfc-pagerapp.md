@@ -9,7 +9,8 @@ client needs it.
 
 Page semantics — the level table and the exact fields that request an acknowledgement versus a
 plain page — are defined in [RFC-PagerAPP-0002](rfc-pages.md), which is authoritative for §3 and §6
-below.
+below. Sender-side gateways and mail bridges can use
+[RFC-PagerAPP-0003](rfc-gateway.md) for a concrete JSON mapping and empty-message checklist.
 
 ---
 
@@ -69,6 +70,10 @@ object.
 | `enc` | string | no | Message body encrypted to the recipient's public key (§8) |
 | `mid` | string | no | Client-side id of the message, for read receipts (§7) |
 | `read` | string | no | Receipt-only page: the `mid` the sender has just read (§7) |
+| `reply_to` | string | no | Chat quote target id |
+| `reply_preview` | string | no | Short quoted excerpt (self-asserted) |
+| `reply_from` | string | no | Sender id of the quoted message |
+| `reply_from_name` | string | no | Display name of the quoted sender |
 
 Clients MUST surface `age_seconds`/`created_at`; an old queued page is not a fresh event.
 
@@ -291,7 +296,7 @@ automatic for pages. ProLOG pages use a different, sender-managed ACK (a reply m
 ## 7. Read receipts
 
 An ACK (§6) is transport: it removes a page from the server queue. A **read receipt** is social:
-it tells the peer their message was actually seen, and drives the ✓ / ✓✓ marks in a chat.
+it tells the peer their message was actually seen, and advances that outgoing chat envelope to read.
 
 - An outgoing chat message carries a client-generated id in `mid`.
 - When the recipient opens (reads) it, the client sends a receipt-only page back to the same

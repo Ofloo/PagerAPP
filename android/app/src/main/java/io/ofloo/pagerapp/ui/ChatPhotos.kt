@@ -15,6 +15,7 @@ import io.ofloo.pagerapp.shared.Page
 import io.ofloo.pagerapp.shared.Pgp
 import io.ofloo.pagerapp.shared.sha256Hex
 import org.json.JSONObject
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import kotlin.math.max
@@ -67,17 +68,24 @@ object ChatPhotos {
         maxDimension: Int = MAX_DIRECT_DIMENSION,
     ): ByteArray? = runCatching {
         val resolver = context.contentResolver
+        // Read once: a screenshot share provider can be a one-shot pipe, and opening it three
+        // times (bounds, pixels, EXIF) made shared screenshots fail with "could not prepare".
+        val source = resolver.openInputStream(uri)?.use { it.readBytes() } ?: return null
+        if (source.isEmpty()) return null
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        BitmapFactory.decodeByteArray(source, 0, source.size, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
 
         var sample = 1
         while (max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= maxDimension) sample *= 2
-        var bitmap = resolver.openInputStream(uri)?.use {
-            BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample })
-        } ?: return null
+        var bitmap = BitmapFactory.decodeByteArray(
+            source,
+            0,
+            source.size,
+            BitmapFactory.Options().apply { inSampleSize = sample },
+        ) ?: return null
 
-        bitmap = orient(uri, resolver, bitmap)
+        bitmap = orient(source, bitmap)
         val scale = maxDimension.toFloat() / max(bitmap.width, bitmap.height)
         if (scale < 1f) {
             bitmap = Bitmap.createScaledBitmap(
@@ -104,6 +112,8 @@ object ChatPhotos {
             bitmap.compress(Bitmap.CompressFormat.JPEG, 65, out)
         }
         out.toByteArray().takeIf { it.size <= maxBytes }
+    }.onFailure {
+        android.util.Log.w("PagerAPP", "photo prepare failed: ${it.message}", it)
     }.getOrNull()
 
     /**
@@ -344,14 +354,12 @@ object ChatPhotos {
         return result
     }
 
-    private fun orient(uri: Uri, resolver: android.content.ContentResolver, bitmap: Bitmap): Bitmap {
+    private fun orient(source: ByteArray, bitmap: Bitmap): Bitmap {
         val orientation = runCatching {
-            resolver.openInputStream(uri)?.use {
-                ExifInterface(it).getAttributeInt(
-                    ExifInterface.TAG_ORIENTATION,
-                    ExifInterface.ORIENTATION_NORMAL,
-                )
-            }
+            ExifInterface(ByteArrayInputStream(source)).getAttributeInt(
+                ExifInterface.TAG_ORIENTATION,
+                ExifInterface.ORIENTATION_NORMAL,
+            )
         }.getOrNull() ?: ExifInterface.ORIENTATION_NORMAL
         val matrix = Matrix()
         when (orientation) {

@@ -78,7 +78,7 @@ struct ActiveWindow: Codable, Equatable {
 let LEVEL_NAMES = ["debug", "info", "warning", "alarm", "critical"]
 
 func defaultLevelOrder() -> [String] {
-    ["info", "warning", "alarm", "critical", "debug"]
+    ["debug", "info", "warning", "alarm", "critical"]
 }
 
 func sanitizeLevelOrder(_ order: [String]?) -> [String] {
@@ -148,8 +148,16 @@ struct Page: Identifiable, Equatable {
     var fromName: String? = nil
     var mid: String? = nil
     var read: String? = nil
+    var deliveredMid: String? = nil
     var pub: String? = nil
     var enc: String? = nil
+    var acked: Bool? = nil
+    var selfCopy: Bool = false
+    var sig: String? = nil
+    var replyTo: String? = nil
+    var replyPreview: String? = nil
+    var replyFrom: String? = nil
+    var replyFromName: String? = nil
 
     init(
         id: String,
@@ -168,8 +176,15 @@ struct Page: Identifiable, Equatable {
         fromName: String? = nil,
         mid: String? = nil,
         read: String? = nil,
+        deliveredMid: String? = nil,
         pub: String? = nil,
-        enc: String? = nil
+        enc: String? = nil,
+        acked: Bool? = nil,
+        selfCopy: Bool = false,
+        replyTo: String? = nil,
+        replyPreview: String? = nil,
+        replyFrom: String? = nil,
+        replyFromName: String? = nil
     ) {
         self.id = id
         self.status = status
@@ -187,8 +202,15 @@ struct Page: Identifiable, Equatable {
         self.fromName = fromName
         self.mid = mid
         self.read = read
+        self.deliveredMid = deliveredMid
         self.pub = pub
         self.enc = enc
+        self.acked = acked
+        self.selfCopy = selfCopy
+        self.replyTo = replyTo
+        self.replyPreview = replyPreview
+        self.replyFrom = replyFrom
+        self.replyFromName = replyFromName
     }
 
     var ackAvailable: Bool { !(ackUuid ?? "").trimmingCharacters(in: .whitespaces).isEmpty }
@@ -315,9 +337,13 @@ func buildPrologAck(_ page: Page) -> AckRequest? {
 enum PageParser {
     static func parse(_ json: [String: Any]) throws -> Page {
         guard let id = json["id"] as? String else { throw ParseError.missingId }
-        let project = json["PROJECT"] as? String
-        let message = json["message"] as? String
-        let logs = json["logs"] as? String
+        let project = (json["PROJECT"] as? String) ?? (json["project"] as? String)
+        let explicitMessage = json["message"] as? String
+        let subject = json["subject"] as? String
+        let body = (json["body"] as? String) ?? (json["text"] as? String) ?? (json["content"] as? String)
+        let message = explicitMessage ?? subject ?? body
+        let logs = (json["logs"] as? String)
+            ?? ((explicitMessage == nil && subject != nil && body != nil && body != subject) ? body : nil)
         let parsedStatus = parseStatus(json["status"])
         let createdAt = numeric(json["created_at"])
         let ageSeconds = numeric(json["age_seconds"])
@@ -335,7 +361,9 @@ enum PageParser {
             createdAt: createdAt,
             ageSeconds: ageSeconds,
             project: project,
-            jobId: json["JOB_ID"] as? String,
+            jobId: (json["JOB_ID"] as? String)
+                ?? (json["job_id"] as? String)
+                ?? (json["job"] as? String),
             message: message,
             logs: logs,
             prio: prio,
@@ -346,8 +374,15 @@ enum PageParser {
             fromName: json["from_name"] as? String,
             mid: json["mid"] as? String,
             read: json["read"] as? String,
+            deliveredMid: json["delivered"] as? String,
             pub: json["pub"] as? String,
-            enc: json["enc"] as? String
+            enc: json["enc"] as? String,
+            acked: json["acked"] as? Bool,
+            selfCopy: json["self_copy"] as? Bool ?? false,
+            replyTo: json["reply_to"] as? String,
+            replyPreview: json["reply_preview"] as? String,
+            replyFrom: json["reply_from"] as? String,
+            replyFromName: json["reply_from_name"] as? String
         )
     }
 

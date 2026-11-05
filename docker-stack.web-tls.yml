@@ -1,0 +1,60 @@
+# PagerAPP web behind HAProxy with HTTPS from HAProxy to the instance.
+#
+# Create the secrets once (replace paths with your cert files):
+#   docker secret create pagerapp_tls_cert ./certs/pagerapp-web.crt
+#   docker secret create pagerapp_tls_key  ./certs/pagerapp-web.key
+#   docker secret create pagerapp_internal_ca ./certs/pagerapp-root-ca.crt
+#   cat ./certs/letsencrypt-fullchain.pem ./certs/letsencrypt-privkey.pem \
+#       | docker secret create haproxy_le -
+#   docker stack deploy -c docker-stack.web-tls.yml pagerapp
+#
+# No volumes or host bind mounts: the web config is a Swarm config; all keys are Swarm secrets.
+services:
+  web:
+    image: ofloo/pagerapp:latest
+    environment:
+      PORT: "8443"
+    secrets:
+      - pagerapp_tls_cert
+      - pagerapp_tls_key
+    networks:
+      - pagerapp
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: unless-stopped
+
+  haproxy:
+    image: haproxy:2.9-alpine
+    depends_on:
+      - web
+    ports:
+      - "80:80"
+      - "443:443"
+    configs:
+      - source: haproxy_cfg
+        target: /usr/local/etc/haproxy/haproxy.cfg
+    secrets:
+      - haproxy_le
+      - pagerapp_internal_ca
+    networks:
+      - pagerapp
+    restart: unless-stopped
+
+configs:
+  haproxy_cfg:
+    file: ./deploy/haproxy/haproxy.cfg
+
+secrets:
+  pagerapp_tls_cert:
+    external: true
+  pagerapp_tls_key:
+    external: true
+  pagerapp_internal_ca:
+    external: true
+  haproxy_le:
+    external: true
+
+networks:
+  pagerapp:
+    driver: overlay

@@ -1,11 +1,17 @@
 package io.ofloo.pagerapp.ui
 
 import android.content.ClipData
+import io.ofloo.pagerapp.p2p.P2PHost
+import androidx.core.content.ContextCompat
+import android.os.Build
+import android.content.pm.PackageManager
+import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.os.PowerManager
 import android.net.Uri
 import android.provider.Settings
 import android.util.Log
@@ -19,6 +25,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
@@ -52,6 +59,7 @@ import io.ofloo.pagerapp.notify.Notifications
 import io.ofloo.pagerapp.net.MailboxStatus
 import io.ofloo.pagerapp.net.PagerClient
 import io.ofloo.pagerapp.net.ServerSettings
+import io.ofloo.pagerapp.net.WebclientMode
 import io.ofloo.pagerapp.push.PushManager
 import io.ofloo.pagerapp.shared.Pgp
 import io.ofloo.pagerapp.shared.WatchMode
@@ -91,8 +99,11 @@ fun SettingsScreen(
     var generating by remember { mutableStateOf(false) }
     var pushOn by remember { mutableStateOf(store.pushEnabled) }
     var fcmOn by remember { mutableStateOf(store.fcmEnabled) }
+    var p2pOn by remember { mutableStateOf(store.p2pModeEnabled) }
+    var p2pServer by remember { mutableStateOf(store.p2pServerEnabled) }
     var confirmReset by remember { mutableStateOf(false) }
     var webBusy by remember { mutableStateOf(false) }
+    var webActive by remember { mutableStateOf(store.webSessionActive()) }
     var webStatus by remember { mutableStateOf<String?>(null) }
     var pushStatus by remember { mutableStateOf<MailboxStatus?>(null) }
     var photoShare by remember { mutableStateOf(store.photoShareUrl) }
@@ -100,9 +111,26 @@ fun SettingsScreen(
     var pageMailboxes by remember { mutableStateOf(store.pageMailboxes()) }
     var newPageName by remember { mutableStateOf("") }
     var generatingPage by remember { mutableStateOf(false) }
+    var confirmMainRenew by remember { mutableStateOf(false) }
+    var mainBusy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val uriHandler = LocalUriHandler.current
     val context = LocalContext.current
+
+    val p2pPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { grants ->
+        if (grants.isNotEmpty() && grants.values.all { it }) {
+            p2pOn = true
+            store.p2pModeEnabled = true
+            P2PHost.refresh(context, store)
+            status = "P2P mode on; nearby sync also runs in the background."
+        } else {
+            p2pOn = false
+            store.p2pModeEnabled = false
+            status = "Bluetooth permissions are required for P2P."
+        }
+    }
 
     val webScanner = rememberQrScanner(
         prompt = "Scan the PagerAPP browser QR",
@@ -111,6 +139,8 @@ fun SettingsScreen(
             val session = uri?.getQueryParameter("session")
             val token = uri?.getQueryParameter("token")
             val publicKey = uri?.getQueryParameter("pub")
+            val action = uri?.getQueryParameter("action")
+            val expires = uri?.getQueryParameter("expires")?.toLongOrNull()
             val base = uri?.let { "${it.scheme}://${it.authority}" }
             if (uri == null || uri.scheme !in listOf("http", "https") ||
                 session.isNullOrBlank() || token.isNullOrBlank() || base.isNullOrBlank()
@@ -119,34 +149,142 @@ fun SettingsScreen(
                     "Create a new code in the web console."
             } else {
                 webBusy = true
-                webStatus = "Encrypting the backup…"
+                webStatus = if (action == "renew") "Renewing the browser lease…"
+                else "Encrypting the backup…"
                 scope.launch {
                     val result = withContext(Dispatchers.IO) {
                         runCatching {
-                            val backup = store.exportBackup()
-                            val recipient = publicKey ?: PagerClient.webHandoffPublicKey(
-                                baseUrl = base,
-                                sessionId = session,
-                                token = token,
-                            )
-                            val encrypted = Pgp.encrypt(backup, recipient)
-                            PagerClient.uploadWebHandoff(
-                                baseUrl = base,
-                                sessionId = session,
-                                token = token,
-                                armored = encrypted.toByteArray(Charsets.UTF_8),
-                            )
+                            val now = System.currentTimeMillis() / 1000L
+                            val sessionExpires = expires?.takeIf { it > now }
+                                ?: (now + 7L * 86_400L)
+                            try {
+                                if (action != "renew") {
+                                    val backup = store.exportBackup()
+                                    val recipient = publicKey ?: PagerClient.webHandoffPublicKey(
+                                        baseUrl = base,
+                                        sessionId = session,
+                                        token = token,
+                                    )
+                                    val encrypted = Pgp.encrypt(backup, recipient)
+                                    PagerClient.uploadWebHandoff(
+                                        baseUrl = base,
+                                        sessionId = session,
+                                        token = token,
+                                        armored = encrypted.toByteArray(Charsets.UTF_8),
+                                    )
+                                }
+                                store.webSessionExpiresAt = sessionExpires
+                                check(WebclientMode.renew(store)) {
+                                    if (action == "renew") {
+                                        "The server did not activate the webclient lease"
+                                    } else {
+                                        "Backup sent, but the server did not activate the webclient lease"
+                                    }
+                                }
+                            } catch (error: Throwable) {
+                                store.clearWebSession()
+                                throw error
+                            }
                         }
                     }
                     webBusy = false
+                    webActive = result.isSuccess
                     webStatus = result.fold(
-                        onSuccess = { "Browser session linked. Waiting for the browser to import it." },
+                        onSuccess = {
+                            if (action == "renew") "Browser lease renewed."
+                            else "Browser session linked. Waiting for the browser to import it."
+                        },
                         onFailure = { "Browser link failed: ${it.message ?: "unknown error"}" },
                     )
                 }
             }
         },
         onDenied = { webStatus = "Camera permission is needed to scan the browser code." },
+    )
+
+    fun renewMainMailbox(newId: String) {
+        if (mainBusy) return
+        mainBusy = true
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    if (store.webSessionActive()) {
+                        runCatching { WebclientMode.clearAll(store) }
+                    }
+                    store.uuid = newId
+                    store.clearWebSession()
+                    if (store.fcmEnabled) PushManager.reconcileFcm(context, force = true)
+                    PushManager.requestRegistration(context)
+                }
+            }
+            webActive = false
+            mainBusy = false
+            status = result.fold(
+                onSuccess = { "Main mailbox renewed. Update your senders with the new UUID." },
+                onFailure = { "Main mailbox changed, but push renewal failed: ${it.message}" },
+            )
+            onServiceChanged(true)
+        }
+    }
+
+    fun generateMainMailbox() {
+        if (mainBusy) return
+        mainBusy = true
+        status = "Generating a new main mailbox…"
+        scope.launch {
+            val created = withContext(Dispatchers.IO) {
+                runCatching { PagerClient.createMailbox(store.serverUrl) }.getOrNull()
+            }
+            if (created == null) {
+                mainBusy = false
+                status = "Could not create a new mailbox"
+            } else {
+                // renewMainMailbox owns the busy flag from here.
+                mainBusy = false
+                renewMainMailbox(created)
+            }
+        }
+    }
+
+    val pageScanner = rememberQrScanner(
+        prompt = "Scan a page mailbox QR",
+        onResult = { scanned ->
+            val id = mailboxIdFromScan(scanned)
+            if (id == null) {
+                status = "That QR is not a mailbox UUID"
+            } else {
+                val name = newPageName.trim().ifBlank { "Scanned address" }
+                store.addPageMailbox(name, id, store.serverUrl)
+                pageMailboxes = store.pageMailboxes()
+                newPageName = ""
+                if (store.fcmEnabled) {
+                    status = "$name added · syncing FCM…"
+                    scope.launch {
+                        val push = withContext(Dispatchers.IO) {
+                            runCatching {
+                                PushManager.reconcileFcm(context, force = true)
+                                PagerClient.mailboxStatus(store.serverUrl, id)?.pushEnabled == true
+                            }.getOrDefault(false)
+                        }
+                        status = if (push) "$name added · FCM enabled"
+                        else "$name added · FCM not registered"
+                    }
+                } else {
+                    status = "$name added · FCM is off"
+                }
+            }
+        },
+        onDenied = { status = "Camera permission is needed to scan QR codes." },
+    )
+
+    val mainScanner = rememberQrScanner(
+        prompt = "Scan the new main mailbox QR",
+        onResult = { scanned ->
+            val id = mailboxIdFromScan(scanned)
+            if (id == null) status = "That QR is not a mailbox UUID"
+            else renewMainMailbox(id)
+        },
+        onDenied = { status = "Camera permission is needed to scan QR codes." },
     )
 
     val exportBackup = rememberLauncherForActivityResult(
@@ -235,10 +373,31 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.labelSmall,
                 )
-                Button(
-                    enabled = !webBusy,
-                    onClick = { webScanner() },
-                ) { Text(if (webBusy) "Linking…" else "Scan browser QR") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        enabled = !webBusy,
+                        onClick = { webScanner() },
+                    ) { Text(if (webBusy) "Linking…" else "Scan browser QR") }
+                    OutlinedButton(
+                        enabled = webActive && !webBusy,
+                        onClick = {
+                            webBusy = true
+                            webStatus = "Clearing web sessions…"
+                            scope.launch {
+                                val ok = withContext(Dispatchers.IO) {
+                                    WebclientMode.clearAll(store)
+                                }
+                                webActive = false
+                                webBusy = false
+                                webStatus = if (ok) {
+                                    "Web sessions cleared. The browser must pair again."
+                                } else {
+                                    "Local web session cleared; some server leases could not be disabled."
+                                }
+                            }
+                        },
+                    ) { Text("Clear web sessions") }
+                }
                 webStatus?.let { Text(it, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp) }
             }
         }
@@ -351,6 +510,7 @@ fun SettingsScreen(
                         store.reliableDelivery = it
                         if (it) { alarmPolling = false; store.alarmPolling = false }
                         onServiceChanged(true)   // re-apply the schedule
+                        P2PHost.refresh(context, store)
                     },
                 )
                 ToggleRow(
@@ -373,8 +533,34 @@ fun SettingsScreen(
                             }
                         }
                         onServiceChanged(true)
+                        P2PHost.refresh(context, store)
                     },
                 )
+                // Battery optimisation is what decides whether background sync survives the
+                // screen going off; Android and OEM power managers freeze the app otherwise.
+                val power = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+                var batteryExempt by remember {
+                    mutableStateOf(power?.isIgnoringBatteryOptimizations(context.packageName) == true)
+                }
+                Text(
+                    if (batteryExempt) {
+                        "Batterij: niet beperkt — achtergrondsynchronisatie blijft draaien."
+                    } else {
+                        "Batterij: beperkt — het systeem kan de app met scherm uit bevriezen. " +
+                            "Zet PagerAPP op \"Niet optimaliseren\"."
+                    },
+                    color = if (batteryExempt) MaterialTheme.colorScheme.onSurfaceVariant
+                    else MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+                TextButton(onClick = {
+                    runCatching {
+                        context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                    }
+                    batteryExempt = power?.isIgnoringBatteryOptimizations(context.packageName) == true
+                }) {
+                    Text(if (batteryExempt) "Batterij-instellingen" else "Batterij-uitzondering instellen")
+                }
                 if (alarmPolling) {
                     Text(
                         "De app wekt zichzelf elke " + poll + " s, haalt de postbussen op en slaapt weer. " +
@@ -445,6 +631,67 @@ fun SettingsScreen(
                             )
                         }
                     }) { Text(tr("Hide its notification")) }
+                }
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("P2P store-and-forward", fontWeight = FontWeight.Bold)
+                ToggleRow(
+                    label = "P2P mode (opt-in)",
+                    checked = p2pOn,
+                    onCheckedChange = { on ->
+                        if (!on) {
+                            p2pOn = false
+                            store.p2pModeEnabled = false
+                            P2PHost.refresh(context, store)
+                        } else {
+                            val needed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                listOf(
+                                    Manifest.permission.BLUETOOTH_SCAN,
+                                    Manifest.permission.BLUETOOTH_ADVERTISE,
+                                    Manifest.permission.BLUETOOTH_CONNECT,
+                                )
+                            } else {
+                                listOf(Manifest.permission.ACCESS_FINE_LOCATION)
+                            }
+                            val missing = needed.filter {
+                                ContextCompat.checkSelfPermission(context, it) !=
+                                    PackageManager.PERMISSION_GRANTED
+                            }
+                            if (missing.isEmpty()) {
+                                p2pOn = true
+                                store.p2pModeEnabled = true
+                                P2PHost.refresh(context, store)
+                                scope.launch {
+                                    val settings = withContext(Dispatchers.IO) {
+                                        runCatching { PagerClient.settings(store.serverUrl) }.getOrNull()
+                                    }
+                                    if (settings != null) {
+                                        store.cacheP2pSettings(settings)
+                                        p2pServer = settings.p2pEnabled
+                                    }
+                                }
+                            } else {
+                                p2pPermissionLauncher.launch(missing.toTypedArray())
+                            }
+                        }
+                    },
+                )
+                Text(
+                    "Only P2P messages carry a stable p2p_id and TTL. The server decides whether " +
+                        "dedupe is enabled and how long it caches the id. Messages addressed to a " +
+                        "UUID owned by this installation are delivered locally without a gateway.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+                if (p2pOn && !p2pServer) {
+                    Text(
+                        "The server does not advertise P2P support yet; P2P fields are not sent.",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
                 }
             }
         }
@@ -836,6 +1083,7 @@ fun SettingsScreen(
                         store.uuid = id
                         restore = ""
                         onServiceChanged(true)
+                        P2PHost.refresh(context, store)
                         status = "Mailbox restored"
                     },
                 ) { Text(tr("Restore")) }
@@ -871,7 +1119,8 @@ fun SettingsScreen(
                 Text(tr("Page addresses"), fontWeight = FontWeight.Bold)
                 Text(
                     "Generate a separate mailbox for each logging source (CI, a logger, ...). " +
-                        "Give that UUID to the source; PagerAPP polls all of them and notifies the same way.",
+                        "Give that UUID to the source; PagerAPP polls all of them and notifies the same way. " +
+                        "Set each address's level order under Regels → level order for.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.labelSmall,
                 )
@@ -881,7 +1130,7 @@ fun SettingsScreen(
                     fontFamily = FontFamily.Monospace,
                     fontSize = 11.sp,
                 )
-                Row {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(
                         enabled = !store.uuid.isNullOrBlank(),
                         onClick = {
@@ -890,6 +1139,14 @@ fun SettingsScreen(
                             status = "Main mailbox UUID copied"
                         },
                     ) { Text(tr("Copy")) }
+                    TextButton(
+                        enabled = !mainBusy && !store.uuid.isNullOrBlank(),
+                        onClick = { confirmMainRenew = true },
+                    ) { Text(tr("Renew")) }
+                    TextButton(
+                        enabled = !mainBusy,
+                        onClick = { mainScanner() },
+                    ) { Text(tr("Scan QR")) }
                 }
                 pageMailboxes.forEach { address ->
                     Text(address.name, fontWeight = FontWeight.Bold)
@@ -905,9 +1162,20 @@ fun SettingsScreen(
                             status = "${address.name} UUID copied"
                         }) { Text(tr("Copy")) }
                         TextButton(onClick = {
-                            store.removePageMailbox(address.id)
-                            pageMailboxes = store.pageMailboxes()
-                            status = "${address.name} removed"
+                            scope.launch {
+                                withContext(Dispatchers.IO) {
+                                    runCatching {
+                                        PushManager.removeFcmTarget(
+                                            context,
+                                            address.serverUrl,
+                                            address.uuid,
+                                        )
+                                    }
+                                }
+                                store.removePageMailbox(address.id)
+                                pageMailboxes = store.pageMailboxes()
+                                status = "${address.name} removed"
+                            }
                         }) { Text(tr("Delete")) }
                     }
                 }
@@ -918,35 +1186,47 @@ fun SettingsScreen(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Button(
-                    enabled = !generatingPage,
-                    onClick = {
-                        generatingPage = true
-                        scope.launch {
-                            val created = withContext(Dispatchers.IO) {
-                                runCatching { PagerClient.createMailbox(store.serverUrl) }.getOrNull()
-                            }
-                            if (created != null) {
-                                store.addPageMailbox(
-                                    newPageName.trim().ifBlank { "Page address ${pageMailboxes.size + 1}" },
-                                    created,
-                                    store.serverUrl,
-                                )
-                                pageMailboxes = store.pageMailboxes()
-                                newPageName = ""
-                                status = "Page address generated"
-                                if (store.fcmEnabled) {
-                                    withContext(Dispatchers.IO) {
-                                        runCatching { PushManager.reconcileFcm(context, force = true) }
-                                    }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        enabled = !generatingPage,
+                        onClick = {
+                            generatingPage = true
+                            scope.launch {
+                                val created = withContext(Dispatchers.IO) {
+                                    runCatching { PagerClient.createMailbox(store.serverUrl) }.getOrNull()
                                 }
-                            } else {
-                                status = "Could not create a mailbox"
+                                if (created != null) {
+                                    store.addPageMailbox(
+                                        newPageName.trim().ifBlank { "Page address ${pageMailboxes.size + 1}" },
+                                        created,
+                                        store.serverUrl,
+                                    )
+                                    pageMailboxes = store.pageMailboxes()
+                                    newPageName = ""
+                                    if (store.fcmEnabled) {
+                                        val push = withContext(Dispatchers.IO) {
+                                            runCatching {
+                                                PushManager.reconcileFcm(context, force = true)
+                                                PagerClient.mailboxStatus(store.serverUrl, created)?.pushEnabled == true
+                                            }.getOrDefault(false)
+                                        }
+                                        status = if (push) "Page address generated · FCM enabled"
+                                        else "Page address generated · FCM not registered"
+                                    } else {
+                                        status = "Page address generated · FCM is off"
+                                    }
+                                } else {
+                                    status = "Could not create a mailbox"
+                                }
+                                generatingPage = false
                             }
-                            generatingPage = false
-                        }
-                    },
-                ) { Text(if (generatingPage) "Generating…" else "Generate address") }
+                        },
+                    ) { Text(if (generatingPage) "Generating…" else "Generate address") }
+                    OutlinedButton(
+                        enabled = !generatingPage,
+                        onClick = { pageScanner() },
+                    ) { Text(tr("Scan address")) }
+                }
             }
         }
 
@@ -1014,9 +1294,12 @@ fun SettingsScreen(
                             keyBits = store.keyBits
                             pushOn = store.pushEnabled
                             fcmOn = store.fcmEnabled
+                            p2pOn = store.p2pModeEnabled
+                            p2pServer = store.p2pServerEnabled
                             pageMailboxes = store.pageMailboxes()
                             onThemeChanged(theme)
                             onServiceChanged(true)
+                            P2PHost.refresh(context, store)
                             status = "Backup restored"
                         },
                         onFailure = { status = "Restore failed: ${it.message ?: "invalid backup"}" },
@@ -1031,6 +1314,32 @@ fun SettingsScreen(
 
     if (showAbout) {
         AboutDialog(store = store, onDismiss = { showAbout = false })
+    }
+
+    if (confirmMainRenew) {
+        AlertDialog(
+            onDismissRequest = { confirmMainRenew = false },
+            title = { Text(tr("Renew main mailbox?")) },
+            text = {
+                Text(
+                    "A new mailbox UUID becomes your main address. The old UUID stops receiving " +
+                        "pages; contacts and extra page addresses are unchanged. Push will be " +
+                        "re-registered for the new mailbox.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmMainRenew = false
+                    generateMainMailbox()
+                }) { Text(tr("Generate new")) }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    confirmMainRenew = false
+                    mainScanner()
+                }) { Text(tr("Scan QR")) }
+            },
+        )
     }
 
     if (confirmReset) {
@@ -1055,6 +1364,7 @@ fun SettingsScreen(
                     val app = context.applicationContext
                     Thread({ runCatching { PushManager.forget(app) } }, "pagerapp-reset").start()
                     onServiceChanged(true)
+                    P2PHost.refresh(context, store)
                     (context as? android.app.Activity)?.recreate()
                 }) { Text(tr("Reset")) }
             },
@@ -1062,6 +1372,14 @@ fun SettingsScreen(
                 TextButton(onClick = { confirmReset = false }) { Text(tr("Cancel")) }
             },
         )
+    }
+}
+
+/** Pulls a mailbox UUID out of a plain UUID, URL or path QR payload. */
+private fun mailboxIdFromScan(raw: String): String? {
+    val value = raw.trim().substringAfterLast('/').substringBefore('?').substringBefore('&')
+    return value.lowercase().takeIf {
+        it.matches(Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"))
     }
 }
 

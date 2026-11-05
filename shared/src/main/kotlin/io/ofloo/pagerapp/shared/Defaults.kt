@@ -23,7 +23,7 @@ const val STATUS_DEBUG = 7
 val LEVEL_NAMES = listOf("debug", "info", "warning", "alarm", "critical")
 
 /** Display order used until the user drags the level cards into their own order. */
-fun defaultLevelOrder(): List<String> = listOf("info", "warning", "alarm", "critical", "debug")
+fun defaultLevelOrder(): List<String> = listOf("debug", "info", "warning", "alarm", "critical")
 
 /** Keeps only known level names, removes duplicates, and appends any missing level. */
 fun sanitizeLevelOrder(order: List<String>?): List<String> {

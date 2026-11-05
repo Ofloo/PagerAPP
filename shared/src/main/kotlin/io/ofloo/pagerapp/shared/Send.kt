@@ -76,11 +76,13 @@ fun buildOutgoing(
     myPublicArmored: String? = null,
     status: Int = STATUS_MESSAGE,
     mid: String? = null,
+    mySecretArmored: String? = null,
 ): Map<String, Any?> = linkedMapOf<String, Any?>("status" to status).apply {
     if (to.mySenderId.isNotBlank()) this["from"] = to.mySenderId
     if (!ownName.isNullOrBlank()) this["from_name"] = ownName
     if (!mid.isNullOrBlank()) this["mid"] = mid
     if (!myPublicArmored.isNullOrBlank()) this["pub"] = myPublicArmored
+    if (!mySecretArmored.isNullOrBlank()) this["sig"] = Pgp.sign(message, mySecretArmored)
 
     if (to.publicKey.isNotBlank()) {
         this["enc"] = Pgp.encrypt(message, to.publicKey)
@@ -101,6 +103,20 @@ fun buildReadReceipt(
 ): Map<String, Any?> = linkedMapOf<String, Any?>(
     "status" to status,
     "read" to mid,
+).apply {
+    if (to.mySenderId.isNotBlank()) this["from"] = to.mySenderId
+    if (!ownName.isNullOrBlank()) this["from_name"] = ownName
+}
+
+/** A receipt-only page: "your message [mid] reached my phone". */
+fun buildDeliveryReceipt(
+    to: Contact,
+    mid: String,
+    ownName: String? = null,
+    status: Int = STATUS_MESSAGE,
+): Map<String, Any?> = linkedMapOf<String, Any?>(
+    "status" to status,
+    "delivered" to mid,
 ).apply {
     if (to.mySenderId.isNotBlank()) this["from"] = to.mySenderId
     if (!ownName.isNullOrBlank()) this["from_name"] = ownName

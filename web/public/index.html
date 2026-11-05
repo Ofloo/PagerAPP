@@ -7,7 +7,7 @@
   <title>PagerAPP</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="stylesheet" href="/vendor/bootstrap.min.css?v=20261024">
-  <link rel="stylesheet" href="/css/salt.css?v=20261024">
+  <link rel="stylesheet" href="/css/salt.css?v=20261026">
 </head>
 <body>
   <header class="topbar">
@@ -19,7 +19,6 @@
       <span class="brand-sub d-none d-md-inline">pager console</span>
       <nav class="nav nav-pills ms-auto align-items-center" id="mainNav">
         <button class="nav-link active" data-view="overview">Overview</button>
-        <button class="nav-link" data-view="pages">Pages</button>
         <button class="nav-link" data-view="chats">Chats</button>
         <button class="nav-link" data-view="settings">Settings</button>
       </nav>
@@ -34,7 +33,7 @@
       <div>
         <div class="eyebrow">PAGERMCP CLIENT</div>
         <h1 class="display-6 fw-semibold mb-1">Your alerts, in the browser.</h1>
-        <p class="text-muted-warm mb-0">A stateless web console for pages and conversations. The phone stays in control of the keys.</p>
+        <p class="text-muted-warm mb-0">A stateless web console for conversations. The phone stays in control of the keys and alerts.</p>
       </div>
       <div class="hero-meta">
         <span class="status-dot" id="healthDot"></span>
@@ -59,7 +58,7 @@
           </div>
         </div>
         <div class="col-12 col-md-4 col-xl-2">
-          <div class="panel metric h-100"><span>Queued</span><strong id="queuedMetric">—</strong><small>messages</small></div>
+          <div class="panel metric h-100"><span>Chats</span><strong id="chatMetric">—</strong><small>conversations</small></div>
         </div>
         <div class="col-12 col-md-4 col-xl-3">
           <div class="panel metric h-100"><span>Retention</span><strong id="retentionMetric">7d</strong><small>messages</small></div>
@@ -68,24 +67,15 @@
 
       <div class="row g-3">
         <div class="col-12 col-xl-7">
-          <div class="panel">
-            <div class="panel-head">
-              <div><span class="panel-kicker">QUEUE</span><h2>Recent pages</h2></div>
-              <button class="btn btn-sm btn-outline-secondary" id="refreshPages">Refresh</button>
-            </div>
-            <div id="recentPages" class="empty-state">Pair with PagerAPP to load pages.</div>
-          </div>
-        </div>
-        <div class="col-12 col-xl-5">
           <div class="panel h-100">
             <div class="panel-head">
               <div><span class="panel-kicker">HANDOFF</span><h2>Browser session</h2></div>
               <span class="chip" id="sessionChip">none</span>
             </div>
-            <p class="text-muted-warm small">The browser makes a temporary keypair. Scan the QR with the phone to hand over the session; the private key stays in this tab.</p>
+            <p class="text-muted-warm small">The browser makes a temporary keypair. Scan the QR with the phone to hand over the full backup; the long-term key stays in this tab's memory. If the webclient lease lapses, the same QR renews it without another transfer.</p>
             <div class="d-flex gap-2 flex-wrap">
               <button class="btn btn-salt" id="createSession">Create session QR</button>
-              <button class="btn btn-outline-secondary" id="renewSession" disabled>Renew</button>
+              <button class="btn btn-outline-secondary" id="renewSession" disabled>Renew lease</button>
               <button class="btn btn-outline-danger" id="deleteSession" disabled>Discard</button>
             </div>
             <div id="sessionInfo" class="session-info mt-3 d-none">
@@ -98,23 +88,44 @@
       </div>
     </section>
 
-    <section id="view-pages" class="view d-none">
-      <div class="panel">
-        <div class="panel-head">
-          <div><span class="panel-kicker">SYSTEM ALERTS</span><h2>Pages</h2></div>
-          <div class="d-flex gap-2"><span class="chip" id="pagesCount">0</span><button class="btn btn-sm btn-outline-secondary" id="refreshPages2">Refresh</button></div>
-        </div>
-        <div id="pagesList" class="empty-state">Pair with PagerAPP to load pages.</div>
-      </div>
-    </section>
-
     <section id="view-chats" class="view d-none">
-      <div class="panel">
-        <div class="panel-head"><div><span class="panel-kicker">CONVERSATIONS</span><h2>Chats</h2></div><span class="chip">web session</span></div>
-        <div class="empty-state">
-          <strong>Chat is available when this tab is paired with the phone.</strong>
-          <div class="mt-2 small text-muted-warm">The phone holds the OpenPGP key and performs decryption; the browser only displays the session. This keeps the private key out of Docker and the browser's persistent storage.</div>
+      <div class="panel" id="chatListPanel">
+        <div class="panel-head">
+          <div><span class="panel-kicker">CONVERSATIONS</span><h2>Chats</h2></div>
+          <div class="d-flex align-items-center gap-2">
+            <span class="chip" id="chatCount">0</span>
+            <button class="btn btn-sm btn-outline-secondary d-none" id="chatRenew" type="button">Renew lease</button>
+          </div>
         </div>
+        <div id="chatList" class="chat-list empty-state">Pair with PagerAPP to load chats.</div>
+      </div>
+      <div class="panel d-none" id="chatThreadPanel">
+        <div class="panel-head">
+          <div class="d-flex align-items-center gap-2">
+            <button class="btn btn-sm btn-outline-secondary" id="chatBack" type="button">←</button>
+            <div>
+              <span class="panel-kicker">CONVERSATION</span>
+              <h2 id="chatTitle" title="Show contact UUID">Chat</h2>
+              <div id="chatUuid" class="mono small text-muted-warm d-none"></div>
+            </div>
+          </div>
+          <span class="chip" id="chatModeChip">—</span>
+        </div>
+        <div id="chatMessages" class="chat-messages"></div>
+        <div id="chatReplyBar" class="chat-reply-bar d-none">
+          <div class="chat-reply-copy">
+            <div class="chat-reply-name" id="chatReplyName"></div>
+            <div class="chat-reply-preview" id="chatReplyPreview"></div>
+          </div>
+          <button class="btn btn-sm btn-outline-secondary" type="button" id="chatReplyCancel" title="Cancel reply">×</button>
+        </div>
+        <form id="chatForm" class="chat-compose">
+          <input class="form-control" id="chatInput" autocomplete="off" placeholder="Message" maxlength="6000">
+          <button class="btn btn-outline-secondary" type="button" id="chatAttach" title="Attach a file">📎</button>
+          <button class="btn btn-salt" type="submit">Send</button>
+        </form>
+        <input type="file" id="chatFile" hidden>
+        <div class="form-note mt-2" id="chatNote">Messages are encrypted in the browser; the key stays in this tab.</div>
       </div>
     </section>
 
@@ -123,7 +134,7 @@
         <div class="col-12 col-xl-6">
           <div class="panel">
             <div class="panel-head"><div><span class="panel-kicker">LOCAL</span><h2>Session</h2></div></div>
-            <p class="small text-muted-warm">This web console stores no data on the server. Mailbox and session values live in this tab's <span class="mono">sessionStorage</span> and disappear when it closes.</p>
+            <p class="small text-muted-warm">This web console stores no data on the server. The mailbox, key, contacts and history live in this tab's memory and disappear when it closes or reloads.</p>
             <button class="btn btn-outline-danger" id="clearLocal">Clear this tab</button>
           </div>
         </div>
@@ -164,7 +175,14 @@
             <button class="btn btn-outline-secondary" type="button" data-import-backup>Import backup file</button>
             <button class="btn btn-outline-secondary" type="button" data-bs-dismiss="modal">Later</button>
           </div>
-          <p class="small text-muted-warm text-center mt-3 mb-0">The code expires after 30 days; scanning is also how you renew the session.</p>
+          <div class="form-check text-start mt-3 d-none" id="clearCacheWrap">
+            <input class="form-check-input" type="checkbox" id="clearCache">
+            <label class="form-check-label small" for="clearCache">
+              Clear cache and start fresh — immediately removes the browser key, contacts and
+              history, then shows a full-transfer code.
+            </label>
+          </div>
+          <p class="small text-muted-warm text-center mt-3 mb-0" id="pairFootnote">The code expires after 7 days; scanning is also how you renew the lease.</p>
         </div>
       </div>
     </div>
@@ -178,7 +196,7 @@
   <script src="/vendor/bootstrap.bundle.min.js?v=20261024"></script>
   <script src="/vendor/qrcode.js?v=20261024"></script>
   <script src="/vendor/kbpgp.min.js"></script>
-  <script src="/js/app.js?v=20261024"></script>
+  <script src="/js/app.js?v=20261026ae"></script>
   <script>if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");</script>
 </body>
 </html>

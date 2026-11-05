@@ -1,15 +1,49 @@
 'use strict';
 
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
 const PORT = Number(process.env.PORT || 8080);
 const PUBLIC = path.join(__dirname, 'public');
-const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const MAX_TRANSFER_BYTES = 32 * 1024 * 1024;
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_TRANSFER_BYTES = 128 * 1024 * 1024;
+const MAX_SHARE_BYTES = 128 * 1024 * 1024;
+const SHARE_HOSTS = new Set(
+  (process.env.PAGERAPP_SHARE_HOSTS || 'share.h4ck.io')
+    .split(',').map((host) => host.trim().toLowerCase()).filter(Boolean),
+);
 const sessions = new Map();
+
+// Optional direct HTTPS. Provide PEM inline or a path, or mount Docker/Swarm secrets at the
+// default locations. If only one half is present the process refuses to start: silently falling
+// back to plaintext would be the wrong failure mode for a key-bearing service.
+function readTlsMaterial(value, file, fallbackFile) {
+  if (value) {
+    return String(value).includes('BEGIN ') ? String(value) : fs.readFileSync(value, 'utf8');
+  }
+  if (fs.existsSync(file)) return fs.readFileSync(file, 'utf8');
+  if (fallbackFile && fs.existsSync(fallbackFile)) return fs.readFileSync(fallbackFile, 'utf8');
+  return null;
+}
+
+const TLS_CERT = readTlsMaterial(
+  process.env.PAGERAPP_TLS_CERT || process.env.TLS_CERT,
+  process.env.PAGERAPP_TLS_CERT_FILE || process.env.TLS_CERT_FILE || '',
+  '/run/secrets/pagerapp_tls_cert',
+);
+const TLS_KEY = readTlsMaterial(
+  process.env.PAGERAPP_TLS_KEY || process.env.TLS_KEY,
+  process.env.PAGERAPP_TLS_KEY_FILE || process.env.TLS_KEY_FILE || '',
+  '/run/secrets/pagerapp_tls_key',
+);
+if (Boolean(TLS_CERT) !== Boolean(TLS_KEY)) {
+  console.error('TLS_CERT and TLS_KEY must both be configured (inline, file or /run/secrets)');
+  process.exit(1);
+}
+const TLS_ENABLED = Boolean(TLS_CERT && TLS_KEY);
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -50,6 +84,16 @@ function readBody(req, limit) {
     req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
+}
+
+function allowedShareUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && !url.username && !url.password &&
+      SHARE_HOSTS.has(url.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
 }
 
 function randomToken() {
@@ -229,22 +273,88 @@ async function routeApi(req, res, url) {
     return json(res, 200, { ok: true });
   }
 
-  const mailboxMatch = url.pathname.match(/^\/api\/mailbox\/([^/]+)\/(messages|ack|status)$/);
+  if (url.pathname === '/api/share/upload' && req.method === 'POST') {
+    const hostValue = url.searchParams.get('host') || `https://${[...SHARE_HOSTS][0] || 'share.h4ck.io'}`;
+    let host;
+    try { host = new URL(hostValue); } catch { return json(res, 400, { error: 'invalid share host' }); }
+    if (!allowedShareUrl(host.origin + '/')) {
+      return json(res, 400, { error: 'share host is not allowed' });
+    }
+    const days = Math.max(1, Math.min(365, Number(url.searchParams.get('days')) || 3));
+    const body = await readBody(req, MAX_SHARE_BYTES);
+    if (!body.length) return json(res, 400, { error: 'empty attachment' });
+    const name = `pagerapp-${crypto.randomUUID()}.asc`;
+    const response = await fetch(`${host.origin}/${name}`, {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/octet-stream',
+        'max-days': String(days),
+        'user-agent': 'PagerAPP-web',
+      },
+      body,
+      redirect: 'error',
+    });
+    if (!response.ok) {
+      return json(res, 502, { error: `share upload HTTP ${response.status}` });
+    }
+    const publicUrl = (await response.text()).trim();
+    if (!allowedShareUrl(publicUrl)) {
+      return json(res, 502, { error: 'share host returned an invalid URL' });
+    }
+    const deleteUrl = response.headers.get('x-url-delete') || null;
+    return json(res, 200, {
+      url: publicUrl,
+      deleteUrl: allowedShareUrl(deleteUrl) ? deleteUrl : null,
+      days,
+    });
+  }
+
+  if (url.pathname === '/api/share/download' && req.method === 'GET') {
+    const target = url.searchParams.get('url') || '';
+    if (!allowedShareUrl(target)) return json(res, 400, { error: 'share URL is not allowed' });
+    const response = await fetch(target, {
+      method: 'GET',
+      headers: { 'user-agent': 'PagerAPP-web', accept: 'application/octet-stream' },
+      redirect: 'error',
+    });
+    if (!response.ok) return json(res, 502, { error: `share download HTTP ${response.status}` });
+    const length = Number(response.headers.get('content-length') || 0);
+    if (length > MAX_SHARE_BYTES) return json(res, 413, { error: 'attachment too large' });
+    const body = Buffer.from(await response.arrayBuffer());
+    if (body.length > MAX_SHARE_BYTES) return json(res, 413, { error: 'attachment too large' });
+    res.writeHead(200, {
+      'content-type': 'application/octet-stream',
+      'content-length': body.length,
+      'cache-control': 'no-store',
+    });
+    return res.end(body);
+  }
+
+  if (url.pathname === '/api/settings' && req.method === 'GET') {
+    const server = url.searchParams.get('server') || 'https://pager.ofloo.io';
+    return proxyJson(req, res, `${server.replace(/\/+$/, '')}/settings`, 'GET', undefined);
+  }
+
+  const mailboxMatch = url.pathname.match(/^\/api\/mailbox\/([^/]+)\/(messages|ack|status|mode|notify)$/);
   if (mailboxMatch) {
     const uuid = decodeURIComponent(mailboxMatch[1]);
     const action = mailboxMatch[2];
     const server = url.searchParams.get('server') || 'https://pager.ofloo.io';
     const base = server.replace(/\/+$/, '');
     if (!/^[0-9a-f-]{36}$/i.test(uuid)) return json(res, 400, { error: 'invalid mailbox' });
-    const target = action === 'messages'
-      ? `${base}/mailboxes/${uuid}/messages`
-      : action === 'ack'
-        ? `${base}/mailboxes/${uuid}/ack`
-        : `${base}/mailboxes/${uuid}/status`;
+    if (action === 'mode' && req.method !== 'GET') {
+      return json(res, 405, { error: 'the phone owns the webclient mode' });
+    }
+    const target = action === 'notify'
+      ? `${base}/notify`
+      : `${base}/mailboxes/${uuid}/${action}`;
+    const upstream = new URL(target);
+    const order = url.searchParams.get('order');
+    if (order === 'newest' || order === 'oldest') upstream.searchParams.set('order', order);
     const body = req.method === 'GET' || req.method === 'HEAD'
       ? undefined
-      : await readBody(req, 64 * 1024).then((b) => b.length ? JSON.parse(b.toString('utf8')) : undefined);
-    return proxyJson(req, res, target, req.method, body);
+      : await readBody(req, 128 * 1024).then((b) => b.length ? JSON.parse(b.toString('utf8')) : undefined);
+    return proxyJson(req, res, upstream.toString(), req.method, body);
   }
 
   return json(res, 404, { error: 'unknown API route' });
@@ -270,7 +380,9 @@ function serveStatic(req, res, url) {
     const ext = path.extname(file).toLowerCase();
     const headers = {
       'content-type': MIME[ext] || 'application/octet-stream',
-      'cache-control': ext === '.html' ? 'no-store' : 'public, max-age=3600',
+      'cache-control': (ext === '.html' || ext === '.js' || ext === '.css')
+        ? 'no-cache'
+        : 'public, max-age=3600',
       'x-content-type-options': 'nosniff',
       'referrer-policy': 'no-referrer',
       'x-frame-options': 'DENY',
@@ -280,8 +392,8 @@ function serveStatic(req, res, url) {
   });
 }
 
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+const requestHandler = async (req, res) => {
+  const url = new URL(req.url, `${TLS_ENABLED ? 'https' : 'http'}://${req.headers.host || 'localhost'}`);
   try {
     if (url.pathname.startsWith('/api/')) {
       await routeApi(req, res, url);
@@ -294,7 +406,11 @@ const server = http.createServer(async (req, res) => {
     if (!res.headersSent) json(res, status, { error: status === 500 ? 'internal error' : error.message });
     else res.destroy();
   }
-});
+};
+
+const server = TLS_ENABLED
+  ? https.createServer({ cert: TLS_CERT, key: TLS_KEY }, requestHandler)
+  : http.createServer(requestHandler);
 
 const cleanup = setInterval(() => {
   const now = Date.now();
@@ -303,5 +419,5 @@ const cleanup = setInterval(() => {
 cleanup.unref();
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`PagerAPP web listening on ${PORT}`);
+  console.log(`PagerAPP web listening on ${PORT}${TLS_ENABLED ? ' (https)' : ''}`);
 });

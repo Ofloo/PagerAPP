@@ -1,0 +1,30 @@
+# Docker Swarm stack for the stateless PagerAPP web console with direct HTTPS.
+#
+# Create the secrets once, then deploy:
+#   docker secret create pagerapp_tls_cert ./certs/pagerapp.crt
+#   docker secret create pagerapp_tls_key  ./certs/pagerapp.key
+#   docker stack deploy -c docker-stack.web.yml pagerapp
+#
+# The server reads /run/secrets/pagerapp_tls_cert and /run/secrets/pagerapp_tls_key
+# automatically. Swarm secrets are read-only tmpfs files mounted by the orchestrator; this
+# stack declares no volumes and no host bind mounts. Never commit the private-key file.
+services:
+  web:
+    image: ofloo/pagerapp:latest
+    ports:
+      - "8443:8443"
+    environment:
+      PORT: "8443"
+    secrets:
+      - pagerapp_tls_cert
+      - pagerapp_tls_key
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: unless-stopped
+
+secrets:
+  pagerapp_tls_cert:
+    external: true
+  pagerapp_tls_key:
+    external: true

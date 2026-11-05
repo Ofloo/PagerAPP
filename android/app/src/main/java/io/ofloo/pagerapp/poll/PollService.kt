@@ -15,6 +15,7 @@ import io.ofloo.pagerapp.net.PagerClient
 import io.ofloo.pagerapp.notify.Notifications
 import io.ofloo.pagerapp.notify.Notifier
 import io.ofloo.pagerapp.notify.RepeatAlerts
+import io.ofloo.pagerapp.p2p.BleP2P
 import io.ofloo.pagerapp.shared.Contact
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
@@ -66,6 +67,8 @@ class PollService : Service() {
         super.onCreate()
         Notifications.ensureChannels(this)
         startForeground(NOTIF_ID, foregroundNotification())
+        // Nearby sync rides on this service so the user sees one notification, not two.
+        if (Store(this).p2pModeEnabled) BleP2P.start(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -82,6 +85,7 @@ class PollService : Service() {
         streamThread.interrupt()
         pollThread.interrupt()
         repeatThread.interrupt()
+        runCatching { BleP2P.stop() }
         super.onDestroy()
     }
 

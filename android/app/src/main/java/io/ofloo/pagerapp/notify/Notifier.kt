@@ -49,7 +49,11 @@ object Notifier {
             Intent(context, io.ofloo.pagerapp.ui.MainActivity::class.java)
                 .putExtra(EXTRA_PAGE_ID, page.id)
                 .putExtra(EXTRA_PAGE_FROM, page.from)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+                .addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP,
+                ),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 
@@ -156,6 +160,16 @@ object Notifier {
         val store = Store(context)
         val own = store.uuid
         val server = serverUrl ?: store.serverUrl
+        val target = mailbox ?: own
+        val leaseReady = if (target.isNullOrBlank()) {
+            io.ofloo.pagerapp.net.WebclientMode.ensure(store)
+        } else {
+            io.ofloo.pagerapp.net.WebclientMode.ensureTarget(store, server, target)
+        }
+        if (!leaseReady) {
+            Log.w(TAG, "ACK postponed: webclient lease is not active")
+            return false
+        }
         // Stop any repeating alert for this page before removing its notification.
         val repeatId = RepeatAlerts.remove(pageId)
         // Confirming removes the page from its mailbox — that is what "acknowledged" means here.

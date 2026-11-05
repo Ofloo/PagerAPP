@@ -8,6 +8,7 @@ import io.ofloo.pagerapp.shared.TimeBound
 import io.ofloo.pagerapp.shared.VibrationPattern
 import io.ofloo.pagerapp.shared.WatchMode
 import io.ofloo.pagerapp.shared.defaultChatLevels
+import io.ofloo.pagerapp.shared.defaultLevelOrder
 import io.ofloo.pagerapp.shared.sanitizeLevelOrder
 import org.json.JSONArray
 import org.json.JSONObject
@@ -107,10 +108,13 @@ object ConfigCodec {
                     arr.optString(i).takeIf { it.isNotBlank() }?.let { order.add(it) }
                 }
             }
+            val normalizedOrder = sanitizeLevelOrder(order)
+            // Migrate the old built-in display order once; a deliberately custom order is kept.
+            val legacyOrder = listOf("info", "warning", "alarm", "critical", "debug")
             PagerConfig(
                 statusRules = rules,
                 activeWindows = windows.ifEmpty { PagerConfig().activeWindows },
-                levelOrder = sanitizeLevelOrder(order),
+                levelOrder = if (normalizedOrder == legacyOrder) defaultLevelOrder() else normalizedOrder,
                 bypassMode = o.optBoolean("bypass", false),
                 silenceMode = o.optBoolean("silence", false),
                 watchMode = enumOr(o.optString("watch"), WatchMode.OFF),

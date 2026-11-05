@@ -116,8 +116,21 @@ data class Page(
     val mid: String? = null,
     /** Set on a receipt-only page: the [mid] the sender has just read. */
     val read: String? = null,
+    /** Set on a receipt-only page: the [mid] that reached the recipient's phone. */
+    val deliveredMid: String? = null,
     /** Server `created_at` in Unix seconds; 0 when absent. Used only for ordering. */
     val createdAt: Double = 0.0,
+    /** PagerMCP read-copy state from a webclient-mode mailbox. */
+    val acked: Boolean? = null,
+    /** A copy of a message this user sent from another client; store it as own history, no alert. */
+    val selfCopy: Boolean = false,
+    /** Detached OpenPGP signature over the readable plaintext, when the sender provided one. */
+    val sig: String? = null,
+    /** Quote/reply metadata: target message id, excerpt and author. */
+    val replyTo: String? = null,
+    val replyPreview: String? = null,
+    val replyFrom: String? = null,
+    val replyFromName: String? = null,
 ) {
     /** Native ACK: available only when the page carries an [ackUuid]. */
     val ackAvailable: Boolean get() = !ackUuid.isNullOrBlank()

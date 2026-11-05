@@ -15,6 +15,17 @@ data class ServerInfo(val version: String, val build: String, val hostname: Stri
 class SubscriptionNotFoundException : IllegalStateException("subscription not found")
 
 /** Thin PagerMCP HTTP client. The server is a dumb relay; this only speaks the RFC endpoints. */
+/** Result of a notify call; the outbox needs to distinguish retryable from permanent errors. */
+enum class NotifyKind { OK, DUPLICATE, EXPIRED, CONFLICT, DISABLED, FULL, RETRY }
+
+data class NotifyOutcome(
+    val kind: NotifyKind,
+    val messageId: String? = null,
+    val error: String? = null,
+) {
+    val accepted: Boolean get() = kind == NotifyKind.OK || kind == NotifyKind.DUPLICATE
+}
+
 object PagerClient {
 
     private const val TAG = "PagerAPP"
@@ -50,9 +61,11 @@ object PagerClient {
     /**
      * Lists queued messages for [uuid]. The server returns
      * `{ "messages": [ { id, created_at, age_seconds, <flattened payload> } ] }`.
+     * PagerMCP 0.10.0 returns the queue newest-first with `order=newest`, so normal polling can
+     * stop as soon as it reaches an already-seen id instead of walking all 128 queued messages.
      */
     fun messages(serverUrl: String, uuid: String): List<Page> {
-        val conn = open("$serverUrl/mailboxes/$uuid/messages", "GET", uuid)
+        val conn = open("$serverUrl/mailboxes/$uuid/messages?order=newest", "GET", uuid)
         try {
             require(conn.responseCode in 200..299) { "messages HTTP ${conn.responseCode}" }
             val body = conn.inputStream.bufferedReader().use(BufferedReader::readText)
@@ -69,10 +82,41 @@ object PagerClient {
 
     /** Sends an ACK page. [bearer] is the target mailbox UUID (the ack_uuid). */
     fun notify(serverUrl: String, bearer: String, payload: Map<String, Any?>) {
+        notifyJson(serverUrl, bearer, JSONObject(payload).toString())
+    }
+
+    /** Sends a previously serialised payload, used when flushing the offline outbox. */
+    fun notifyJson(serverUrl: String, bearer: String, payloadJson: String) {
+        val outcome = notifyJsonOutcome(serverUrl, bearer, payloadJson)
+        require(outcome.accepted) {
+            "notify HTTP ${outcome.kind.name.lowercase()}: ${outcome.error ?: "no response"}"
+        }
+    }
+
+    /** Notify with an explicit outcome, used by the P2P outbox to drop expired/conflict entries. */
+    fun notifyJsonOutcome(serverUrl: String, bearer: String, payloadJson: String): NotifyOutcome {
         val conn = open("$serverUrl/notify", "POST", bearer)
-        try {
-            conn.outputStream.use { it.write(JSONObject(payload).toString().toByteArray()) }
-            require(conn.responseCode in 200..299) { "notify HTTP ${conn.responseCode}" }
+        return try {
+            conn.outputStream.use { it.write(payloadJson.toByteArray()) }
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val body = stream?.bufferedReader()?.use(BufferedReader::readText).orEmpty()
+            when (code) {
+                200, 201, 202 -> {
+                    val duplicate = runCatching { JSONObject(body).optBoolean("duplicate", false) }
+                        .getOrDefault(false)
+                    val id = runCatching { JSONObject(body).optString("id").takeIf(String::isNotBlank) }
+                        .getOrNull()
+                    NotifyOutcome(if (duplicate) NotifyKind.DUPLICATE else NotifyKind.OK, id)
+                }
+                410 -> NotifyOutcome(NotifyKind.EXPIRED, error = body.ifBlank { "p2p message expired" })
+                409 -> NotifyOutcome(NotifyKind.CONFLICT, error = body.ifBlank { "p2p_id conflict" })
+                403 -> NotifyOutcome(NotifyKind.DISABLED, error = body.ifBlank { "p2p dedupe is not enabled" })
+                429 -> NotifyOutcome(NotifyKind.FULL, error = body.ifBlank { "mailbox is full" })
+                else -> NotifyOutcome(NotifyKind.RETRY, error = "HTTP $code: $body")
+            }
+        } catch (error: Throwable) {
+            NotifyOutcome(NotifyKind.RETRY, error = error.message ?: error.javaClass.simpleName)
         } finally {
             conn.disconnect()
         }
@@ -90,6 +134,33 @@ object PagerClient {
         try {
             conn.outputStream.use { it.write(JSONObject().put("id", messageId).toString().toByteArray()) }
             require(conn.responseCode in 200..299) { "ack HTTP ${conn.responseCode}" }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** `GET /mailboxes/{uuid}/mode` — whether read-copy retention is active, and until when. */
+    fun webclientMode(serverUrl: String, uuid: String): MailboxMode {
+        val conn = open("$serverUrl/mailboxes/$uuid/mode", "GET", uuid)
+        try {
+            require(conn.responseCode in 200..299) { "mode HTTP ${conn.responseCode}" }
+            val body = JSONObject(conn.inputStream.bufferedReader().use(BufferedReader::readText))
+            return MailboxMode.parse(body)
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** Enables or disables read-copy retention. The server returns the resulting lease. */
+    fun setWebclientMode(serverUrl: String, uuid: String, enabled: Boolean): MailboxMode {
+        val conn = open("$serverUrl/mailboxes/$uuid/mode", "POST", uuid)
+        try {
+            conn.outputStream.use {
+                it.write(JSONObject().put("webclient", enabled).toString().toByteArray())
+            }
+            require(conn.responseCode in 200..299) { "mode HTTP ${conn.responseCode}" }
+            val body = JSONObject(conn.inputStream.bufferedReader().use(BufferedReader::readText))
+            return MailboxMode.parse(body)
         } finally {
             conn.disconnect()
         }
@@ -181,6 +252,8 @@ object PagerClient {
         endpoint: String? = null,
         topic: String? = null,
         token: String? = null,
+        route: String? = null,
+        routes: List<String>? = null,
     ): JSONObject {
         val conn = open("$serverUrl/mailboxes/$uuid/subscriptions", "POST", uuid)
         try {
@@ -188,6 +261,8 @@ object PagerClient {
             if (endpoint != null) body.put("endpoint", endpoint)
             if (topic != null) body.put("topic", topic)
             if (token != null) body.put("token", token)
+            if (!route.isNullOrBlank()) body.put("route", route)
+            if (!routes.isNullOrEmpty()) body.put("routes", org.json.JSONArray(routes))
             conn.outputStream.use { it.write(body.toString().toByteArray()) }
             require(conn.responseCode in 200..299) { "subscribe HTTP ${conn.responseCode}" }
             return JSONObject(conn.inputStream.bufferedReader().use(BufferedReader::readText))
@@ -215,11 +290,16 @@ object PagerClient {
         uuid: String,
         id: String,
         token: String,
+        route: String? = null,
+        routes: List<String>? = null,
     ): JSONObject {
         val conn = open("$serverUrl/mailboxes/$uuid/subscriptions", "POST", uuid)
         try {
             conn.outputStream.use {
-                it.write(JSONObject().put("id", id).put("token", token).toString().toByteArray())
+                val body = JSONObject().put("id", id).put("token", token)
+                if (!route.isNullOrBlank()) body.put("route", route)
+                if (!routes.isNullOrEmpty()) body.put("routes", org.json.JSONArray(routes))
+                it.write(body.toString().toByteArray())
             }
             val code = conn.responseCode
             if (code == HttpURLConnection.HTTP_NOT_FOUND) throw SubscriptionNotFoundException()
@@ -262,17 +342,21 @@ object PagerClient {
             val body = JSONObject(conn.inputStream.bufferedReader().use(BufferedReader::readText))
             val push = body.optJSONObject("push")
             val retention = body.optJSONObject("retention")
+            val webclient = body.optJSONObject("webclient")
             val channels = push?.optJSONArray("channels")?.let { arr ->
                 (0 until arr.length()).mapNotNull { arr.optString(it).takeIf(String::isNotBlank) }
             } ?: emptyList()
             return MailboxStatus(
                 messages = body.optInt("messages"),
+                unacked = body.optInt("unacked", body.optInt("messages")),
                 pushEnabled = push?.optBoolean("enabled") ?: false,
                 subscriptions = push?.optInt("subscriptions") ?: 0,
                 channels = channels,
                 nextExpiry = (push?.opt("next_expiry") as? Number)?.toLong(),
                 messageTtlSeconds = (retention?.opt("message_ttl_seconds") as? Number)?.toLong() ?: 0L,
                 mailboxTtlSeconds = (retention?.opt("mailbox_ttl_seconds") as? Number)?.toLong() ?: 0L,
+                webclientEnabled = webclient?.optBoolean("enabled") ?: false,
+                webclientExpires = (webclient?.opt("expires") as? Number)?.toLong(),
             )
         } finally {
             conn.disconnect()

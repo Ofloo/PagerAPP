@@ -98,10 +98,18 @@ object PushManager {
         val targets = if (serverUrl == null) mailboxesInUse(store) else {
             mailboxesInUse(store).filter { it.first == serverUrl }
         }
+        // The server decides whether a push subscription is identified by the mailbox UUID or by
+        // an anonymised route hash; learn that before registering anything.
+        targets.map { it.first }.distinct().forEach { server ->
+            runCatching { PagerClient.settings(server) }
+                .onSuccess { store.cachePushIdentity(it) }
+        }
         val prior = store.fcmLeases().toMutableList()
         val desired = targets.toSet()
         val successfulTargets = mutableSetOf<Pair<String, String>>()
         targets.forEach { (server, mailbox) ->
+            val route = store.pushRoute(mailbox)
+            val routes = store.pushRoutes(mailbox)
             val subscriptions = runCatching { PagerClient.subscriptions(server, mailbox) }
                 .onFailure { Log.w(TAG, "fcm subscription check failed for ${mailbox.take(8)}…: ${it.message}") }
                 .getOrNull() ?: return@forEach
@@ -128,29 +136,41 @@ object PushManager {
                     .onFailure { Log.w(TAG, "expired fcm lease cleanup failed: ${it.message}") }
             }
             val unchangedToken = store.fcmToken == fresh
+            // A rotating identity must be renewed when the bucket rolls over, even if the lease
+            // itself is still valid; the server only accepts a few neighbouring buckets.
+            val routeChanged = route != null && current?.route != route
             val validLease = current != null && active.any { it.subscriptionId == current.subscriptionId } &&
-                current.expiresAt > System.currentTimeMillis() / 1000L + 5 * 86_400L
+                current.expiresAt > System.currentTimeMillis() / 1000L + 5 * 86_400L &&
+                !routeChanged
             if (current != null && unchangedToken && validLease && !force) {
                 successfulTargets += server to mailbox
             } else {
                 val actual = if (current == null) {
-                    runCatching { PagerClient.subscribe(server, mailbox, FCM_CHANNEL, token = fresh) }
+                    runCatching { PagerClient.subscribe(
+                            server, mailbox, FCM_CHANNEL, token = fresh, route = route, routes = routes,
+                        ) }
                         .onFailure { Log.w(TAG, "fcm subscribe failed for ${mailbox.take(8)}…: ${it.message}") }
                         .getOrNull()
                 } else {
                     val renewal = runCatching {
-                        PagerClient.renewFcmSubscription(server, mailbox, current.subscriptionId, fresh)
+                        PagerClient.renewFcmSubscription(
+                                server, mailbox, current.subscriptionId, fresh, route = route, routes = routes,
+                            )
                     }
                     if (renewal.isSuccess) {
                         JSONObject(renewal.getOrThrow().toString()).put("id", current.subscriptionId)
                     } else if (renewal.exceptionOrNull() is SubscriptionNotFoundException) {
                         runCatching {
-                            PagerClient.subscribe(server, mailbox, FCM_CHANNEL, token = fresh)
+                            PagerClient.subscribe(
+                            server, mailbox, FCM_CHANNEL, token = fresh, route = route, routes = routes,
+                        )
                         }.onFailure { Log.w(TAG, "fcm re-subscribe failed for ${mailbox.take(8)}…: ${it.message}") }
                             .getOrNull()
                     } else if (!matchingToken) {
                         runCatching {
-                            PagerClient.renewFcmSubscription(server, mailbox, current.subscriptionId, fresh)
+                            PagerClient.renewFcmSubscription(
+                                server, mailbox, current.subscriptionId, fresh, route = route, routes = routes,
+                            )
                         }.onFailure { Log.w(TAG, "fcm token replacement failed for ${mailbox.take(8)}…: ${it.message}") }
                             .getOrNull()?.let { JSONObject(it.toString()).put("id", current.subscriptionId) }
                     } else {
@@ -166,6 +186,7 @@ object PushManager {
                         mailbox,
                         actual.optString("id").ifBlank { lease?.subscriptionId.orEmpty() },
                         (actual.opt("expires") as? Number)?.toLong() ?: lease?.expiresAt ?: 0L,
+                        route,
                     )
                     val updatedIndex = prior.indexOfFirst { it.serverUrl == server && it.mailbox == mailbox }
                     if (updatedIndex >= 0) prior[updatedIndex] = updated else prior += updated

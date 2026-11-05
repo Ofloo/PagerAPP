@@ -7,6 +7,9 @@ sender must include to request an acknowledgement or to send a plain message tha
 acknowledgement. It is the authoritative description of page semantics for PagerAPP; the general
 client structures are in [RFC-PagerAPP-0001](rfc-pagerapp.md).
 
+Sender gateways and email bridges that only need to create readable pages can use
+[RFC-PagerAPP-0003](rfc-gateway.md) for the concrete JSON mapping.
+
 Two sender profiles are defined:
 
 - **Native PagerAPP profile** — numeric `status`, optional urgency in `prio`, native ACK through
@@ -101,10 +104,17 @@ Transport fields sit **beside** the sender's fields. There is no nested `payload
 | `from_name` | string | no | Sender's display name for chat. |
 | `mid` | string | no | Client-generated id of an outgoing chat message, for read receipts. |
 | `read` | string | no | Receipt-only page: the `mid` the sender has just read. |
+| `delivered` | string | no | Receipt-only page: the `mid` that reached the recipient's phone. |
 | `pub` | string | no | Sender's armored OpenPGP public key. |
 | `enc` | string | no | Message body encrypted to the recipient's public key. |
+| `sig` | string | no | Detached OpenPGP signature over the readable plaintext (the same string as `enc` decrypts to). Optional for legacy senders. |
+| `reply_to` | string | no | Chat quote: target `mid` or message id. |
+| `reply_preview` | string | no | Chat quote: short self-asserted excerpt. |
+| `reply_from` | string | no | Chat quote: sender id of the quoted message. |
+| `reply_from_name` | string | no | Chat quote: display name of the quoted sender. |
 
-Unknown fields MUST be ignored. Only the fields above are read by PagerAPP.
+Unknown fields MUST be ignored. Only the fields above are read by PagerAPP. Quote metadata is
+informational and self-asserted; clients must not treat it as proof of authorship.
 
 ---
 
@@ -153,7 +163,8 @@ ProLOG assigns every alarm one of five urgency levels. The **rank** is, lowest f
 | 3 | `alarm` | alarm | |
 | 4 | `critical` | critical | |
 
-The **display order** is different: ProLOG shows `info · warning · alarm · critical · debug`
+The **display order** is configurable; PagerAPP starts lowest-first (`debug · info · warning ·
+alarm · critical`). Do not infer severity from a custom display order.
 (debug last). That is a UI choice, **not** the sender-side threshold rank. Threshold comparisons
 always use the rank above; never infer severity from the order in a list. In particular, `debug`
 ranks **lowest**, not highest, despite being displayed last. (Linux syslog also ranks debug below
@@ -472,14 +483,22 @@ A chat message is a plain message on a shared contact channel. It does **not** u
 ```
 
 - `from` MUST be the sender's **per-channel** id, never a mailbox UUID.
+- `sig` is a detached signature over the plaintext, not over the ciphertext. It is required for
+  messages created from **2026-11-01T00:00:00Z** (Unix `1793491200`); older messages are legacy and
+  remain readable without one. Receivers SHOULD verify it against the pinned contact key. A changed
+  `pub` key is not automatically trusted; the user must re-add/accept the contact before its
+  signatures count.
 - `mid` is the client-side id used for read receipts.
 - `pub` is attached to every outgoing message so the peer learns the key.
 - `enc` replaces `message` once the peer's key is known.
 - Reading is the acknowledgement: the recipient confirms inbound chat pages as it shows them and does
   not send a status-6 report.
-- A read receipt is a separate page: `{ "status": 10, "from": "<my id>", "read": "<mid>" }`.
+- A delivery receipt is a separate page: `{ "status": 10, "from": "<my id>", "delivered": "<mid>" }`.
+  A read receipt is a separate page: `{ "status": 10, "from": "<my id>", "read": "<mid>" }`.
   A receiver MUST queue-confirm a receipt-only page and MUST NOT show, notify or count it as a
-  chat message; it only marks the matching outgoing message read (✓ → ✓✓).
+  chat message. Delivery moves the sender from an underway envelope (motion lines) to a closed envelope; read moves
+  it to an open envelope with the flap raised. Legacy clients that never send delivery receipts leave the message on the
+  underway icon until a read receipt arrives.
 - Only the receiver confirms a shared channel's page. Confirming your own message would remove it
   before the peer sees it: a client MUST NOT do that.
 

@@ -55,7 +55,12 @@ import io.ofloo.pagerapp.shared.statusForUrgency
 fun RulesScreen(store: Store) {
     var config by remember { mutableStateOf(store.config) }
     var customInput by remember { mutableStateOf("") }
-    val levelOrder = remember(config.levelOrder) { sanitizeLevelOrder(config.levelOrder) }
+    var pageMailboxes by remember { mutableStateOf(store.pageMailboxes()) }
+    var selectedScope by remember { mutableStateOf("main") }
+    val selectedAddress = pageMailboxes.firstOrNull { it.id == selectedScope }
+    val levelOrder = remember(selectedAddress?.id, selectedAddress?.levelOrder, config.levelOrder) {
+        sanitizeLevelOrder(selectedAddress?.levelOrder ?: config.levelOrder)
+    }
     val otherStatuses = remember(config) {
         (config.statusRules.keys + (4..5) + STATUS_MESSAGE)
             .filterNot { it in setOf(0, 1, 2, 3, STATUS_DEBUG) }
@@ -72,18 +77,42 @@ fun RulesScreen(store: Store) {
         val order = levelOrder.toMutableList()
         val level = order.removeAt(from)
         order.add(to, level)
-        config = config.copy(levelOrder = order)
-        store.config = config
+        if (selectedAddress == null) {
+            config = config.copy(levelOrder = order)
+            store.config = config
+        } else {
+            store.setPageMailboxLevelOrder(selectedAddress.id, order)
+            pageMailboxes = store.pageMailboxes()
+        }
     }
 
     LazyColumn(modifier = Modifier.fillMaxSize().padding(12.dp)) {
         item {
             Section("Levels")
             Text(
-                "Top is your highest rank. Move a level up or down; each card keeps its own " +
-                    "action, vibration and schedule.",
+                "Top is your lowest rank; debug starts there. Move a level up or down; each card " +
+                    "keeps its own action, vibration and schedule.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (pageMailboxes.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Picker(
+                    label = "level order for",
+                    value = selectedScope,
+                    options = listOf("main") + pageMailboxes.map { it.id },
+                    display = { id ->
+                        if (id == "main") "Main mailbox"
+                        else pageMailboxes.firstOrNull { it.id == id }?.name ?: "Page address"
+                    },
+                    onSelect = { selectedScope = it },
+                )
+                Text(
+                    "Each page address can keep its own level order. Actions and schedules are " +
+                        "shared by all mailboxes.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
             Spacer(Modifier.height(8.dp))
         }
 

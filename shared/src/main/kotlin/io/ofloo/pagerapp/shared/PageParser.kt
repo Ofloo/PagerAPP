@@ -18,10 +18,20 @@ object PageParser {
 
     fun parse(json: Map<String, Any?>): Page {
         val id = json["id"] as? String ?: error("page missing id")
-        val project = json["PROJECT"] as? String
-        val message = json["message"] as? String
-        val logs = json["logs"] as? String
-        val rawPrio = (json["prio"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
+        val project = textOrNull(json["PROJECT"]) ?: textOrNull(json["project"])
+        val explicitMessage = textOrNull(json["message"])
+        // Mail gateways commonly hand over subject/body fields. `message` stays authoritative;
+        // these aliases only prevent an otherwise valid page from rendering as empty text.
+        val subject = textOrNull(json["subject"])
+        val body = textOrNull(json["body"])
+            ?: textOrNull(json["text"])
+            ?: textOrNull(json["content"])
+        val message = explicitMessage ?: subject ?: body
+        val logs = textOrNull(json["logs"])
+            ?: if (explicitMessage == null && subject != null && body != null && body != subject) {
+                body
+            } else null
+        val rawPrio = textOrNull(json["prio"])?.trim()?.takeIf { it.isNotEmpty() }
         // A recognised top-level prio wins; otherwise fall back to ProLOG's legacy [LEVEL] title.
         val prio = when {
             rawPrio != null && statusForUrgency(rawPrio) != null -> rawPrio
@@ -35,11 +45,20 @@ object PageParser {
             // the existing per-status rules and UI labels apply to the actual urgency.
             status = statusForUrgency(prio) ?: parseStatus(json["status"]),
             project = project,
-            jobId = json["JOB_ID"] as? String,
+            jobId = textOrNull(json["JOB_ID"])
+                ?: textOrNull(json["job_id"])
+                ?: textOrNull(json["job"]),
             message = message,
             logs = visibleLogs,
             prio = prio,
             ackUuid = json["ack_uuid"] as? String,
+            acked = json["acked"] as? Boolean,
+            selfCopy = json["self_copy"] as? Boolean ?: false,
+            sig = textOrNull(json["sig"]),
+            replyTo = (json["reply_to"] as? String)?.takeIf { it.isNotBlank() },
+            replyPreview = (json["reply_preview"] as? String)?.takeIf { it.isNotBlank() },
+            replyFrom = (json["reply_from"] as? String)?.takeIf { it.isNotBlank() },
+            replyFromName = (json["reply_from_name"] as? String)?.takeIf { it.isNotBlank() },
             replyUuid = (json["reply_uuid"] as? String)?.takeIf { it.isNotBlank() }
                 ?: prologAck?.first,
             ackToken = (json["ack_token"] as? String)?.takeIf { it.isNotBlank() }
@@ -55,6 +74,7 @@ object PageParser {
             enc = json["enc"] as? String,
             mid = json["mid"] as? String,
             read = json["read"] as? String,
+            deliveredMid = (json["delivered"] as? String)?.takeIf { it.isNotBlank() },
             createdAt = (json["created_at"] as? Number)?.toDouble() ?: 0.0,
         )
     }
@@ -98,6 +118,9 @@ object PageParser {
             ?: return null
         return uuid to token
     }
+
+    private fun textOrNull(raw: Any?): String? =
+        (raw as? String)?.takeIf { it.isNotBlank() }
 
     private fun intOrNull(raw: Any?): Int? = when (raw) {
         is Number -> raw.toInt()

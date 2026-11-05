@@ -2,7 +2,9 @@ package io.ofloo.pagerapp.ui
 
 import android.os.Handler
 import android.os.Looper
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.combinedClickable
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -36,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.ofloo.pagerapp.data.HistoryEntry
@@ -59,6 +62,7 @@ import java.util.UUID
  */
 enum class NfcMode { NONE, READ, WRITE }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ContactsScreen(store: Store, onOpenChat: (Contact) -> Unit) {
     val context = LocalContext.current
@@ -71,6 +75,8 @@ fun ContactsScreen(store: Store, onOpenChat: (Contact) -> Unit) {
     var status by remember { mutableStateOf<String?>(null) }
     var sendTo by remember { mutableStateOf<Contact?>(null) }
     var renameTarget by remember { mutableStateOf<Contact?>(null) }
+    var deleteTarget by remember { mutableStateOf<Contact?>(null) }
+    var expandedContacts by remember { mutableStateOf(setOf<String>()) }
     var pastedInvite by remember { mutableStateOf("") }
     val config = store.config
 
@@ -79,6 +85,19 @@ fun ContactsScreen(store: Store, onOpenChat: (Contact) -> Unit) {
     var nfcMode by remember { mutableStateOf(NfcMode.NONE) }
 
     fun refresh() { contacts = store.contacts() }
+
+    fun deleteContact(contact: Contact) {
+        val app = context.applicationContext
+        Thread({
+            PushManager.removeFcmTarget(app, contact.serverUrl, contact.inbox)
+        }, "pagerapp-fcm-remove").start()
+        store.removeContact(contact.id)
+        store.deleteThread(contact.senderId, contact.mySenderId)
+        expandedContacts = expandedContacts - contact.id
+        refresh()
+        deleteTarget = null
+        status = "Contact deleted"
+    }
 
     // Leave reader mode when the screen goes away.
     DisposableEffect(activity) {
@@ -156,6 +175,9 @@ fun ContactsScreen(store: Store, onOpenChat: (Contact) -> Unit) {
         onDispose { store.unregisterListener(listener) }
     }
 
+    val sortedContacts = remember(contacts) {
+        contacts.sortedBy { it.name.ifBlank { it.uuid }.lowercase() }
+    }
     val scanner = rememberQrScanner(
         prompt = "Scan a PagerAPP contact QR code",
         onResult = { scanned -> addFromPayload(scanned, UUID.randomUUID().toString()) },
@@ -265,82 +287,107 @@ fun ContactsScreen(store: Store, onOpenChat: (Contact) -> Unit) {
             }
         }
 
-        items(contacts, key = { it.id }) { contact ->
-            val inbound = store.history().filter { it.from == contact.senderId && it.from.isNotBlank() }
-                .takeLast(3)
-            Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
-                        contact.name.ifBlank { "(unnamed)" } +
-                            if (contact.awaitingReply) " · waiting for their first reply" else "",
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Text(
-                        contact.uuid,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    if (contact.receiveOn.isNotBlank() && contact.receiveOn != contact.uuid) {
+        items(sortedContacts, key = { it.id }) { contact ->
+            val expanded = contact.id in expandedContacts
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 2.dp)
+                    .combinedClickable(
+                        onClick = {
+                            expandedContacts = if (expanded) expandedContacts - contact.id
+                            else expandedContacts + contact.id
+                        },
+                        onLongClick = { deleteTarget = contact },
+                    ),
+            ) {
+                Column(
+                    modifier = Modifier.padding(
+                        horizontal = 12.dp,
+                        vertical = if (expanded) 12.dp else 2.dp,
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(if (expanded) 4.dp else 0.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
                         Text(
-                            "your address for this chat: ${contact.receiveOn}",
+                            contact.name.ifBlank { "(unnamed)" } +
+                                if (contact.awaitingReply) " · waiting for their first reply" else "",
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(if (expanded) "▾" else "▸", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (expanded) {
+                        Text(
+                            contact.uuid,
                             fontFamily = FontFamily.Monospace,
                             fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.primary,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                    }
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Picker(
-                            label = "type",
-                            value = contact.kind,
-                            options = ContactKind.entries,
-                            display = { if (it == ContactKind.PERSON) "person (chat)" else "system (alarms)" },
-                            onSelect = { store.upsertContact(contact.copy(kind = it)); refresh() },
-                        )
-                        if (contact.kind == ContactKind.PERSON) {
-                            val levels = config.chatLevels.keys.toList()
-                            if (levels.isNotEmpty()) {
-                                Picker(
-                                    label = "level",
-                                    value = contact.level,
-                                    options = levels,
-                                    display = { it },
-                                    onSelect = {
-                                        store.upsertContact(contact.copy(level = it)); refresh()
-                                    },
-                                )
+                        if (contact.receiveOn.isNotBlank() && contact.receiveOn != contact.uuid) {
+                            Text(
+                                "your address for this chat: ${contact.receiveOn}",
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Picker(
+                                label = "type",
+                                value = contact.kind,
+                                options = ContactKind.entries,
+                                display = { if (it == ContactKind.PERSON) "person (chat)" else "system (alarms)" },
+                                onSelect = { store.upsertContact(contact.copy(kind = it)); refresh() },
+                            )
+                            if (contact.kind == ContactKind.PERSON) {
+                                val levels = config.chatLevels.keys.toList()
+                                if (levels.isNotEmpty()) {
+                                    Picker(
+                                        label = "level",
+                                        value = contact.level,
+                                        options = levels,
+                                        display = { it },
+                                        onSelect = {
+                                            store.upsertContact(contact.copy(level = it)); refresh()
+                                        },
+                                    )
+                                }
                             }
                         }
-                    }
-                    if (inbound.isNotEmpty()) {
-                        Spacer(Modifier.height(2.dp))
-                        inbound.forEach { m -> Text("• ${m.message ?: "(no text)"}", fontSize = 13.sp) }
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (contact.kind == ContactKind.PERSON) {
-                            Button(onClick = { onOpenChat(contact) }) { Text(tr("Open chat")) }
-                        } else {
-                            Button(onClick = { sendTo = contact }) { Text(tr("Send")) }
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (contact.kind == ContactKind.PERSON) {
+                                Button(onClick = { onOpenChat(contact) }) { Text(tr("Open chat")) }
+                            } else {
+                                Button(onClick = { sendTo = contact }) { Text(tr("Send")) }
+                            }
+                            TextButton(onClick = { renameTarget = contact }) { Text(tr("Rename")) }
                         }
-                        TextButton(onClick = { renameTarget = contact }) { Text(tr("Rename")) }
-                        TextButton(onClick = {
-                            val app = context.applicationContext
-                            Thread({ PushManager.removeFcmTarget(app, contact.serverUrl, contact.inbox) }, "pagerapp-fcm-remove").start()
-                            store.removeContact(contact.id)
-                            refresh()
-                        }) {
-                            Text(tr("Delete"))
+                        TextButton(
+                            onClick = { deleteTarget = contact },
+                            colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error,
+                            ),
+                        ) { Text(tr("Delete")) }
+                        if (contact.kind == ContactKind.SYSTEM) {
+                            Text(
+                                "System contacts always need a manual ACK, so you know it was seen.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.labelSmall,
+                            )
                         }
-                    }
-                    if (contact.kind == ContactKind.SYSTEM) {
-                        Text(
-                            "System contacts always need a manual ACK, so you know it was seen.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.labelSmall,
-                        )
                     }
                 }
             }
@@ -352,6 +399,26 @@ fun ContactsScreen(store: Store, onOpenChat: (Contact) -> Unit) {
                 Text(it, color = MaterialTheme.colorScheme.primary)
             }
         }
+    }
+
+    deleteTarget?.let { contact ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text(tr("Delete contact?")) },
+            text = {
+                Text(
+                    "Remove ${contact.name.ifBlank { contact.uuid.take(8) }} and its local chat " +
+                        "history from this device? The channel mailbox stays on the server until " +
+                        "its normal retention expires.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { deleteContact(contact) }) { Text(tr("Delete")) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) { Text(tr("Cancel")) }
+            },
+        )
     }
 
     inviteQr?.let { payload ->
@@ -396,11 +463,13 @@ fun ContactsScreen(store: Store, onOpenChat: (Contact) -> Unit) {
                 scope.launch {
                     val ok = withContext(Dispatchers.IO) {
                         runCatching {
+                            val ownKeys = store.ensureOwnKeys()
                             val payload = buildOutgoing(
                                 contact,
                                 store.displayName,
                                 text,
-                                myPublicArmored = store.ensureOwnKeys().publicArmored,
+                                myPublicArmored = ownKeys.publicArmored,
+                                mySecretArmored = ownKeys.secretArmored,
                             )
                             PagerClient.notify(store.serverUrl, contact.outbox, payload)
                             true

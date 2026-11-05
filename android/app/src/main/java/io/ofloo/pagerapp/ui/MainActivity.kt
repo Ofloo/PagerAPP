@@ -25,6 +25,7 @@ import io.ofloo.pagerapp.diag.CrashLog
 import io.ofloo.pagerapp.diag.CrashScreen
 import io.ofloo.pagerapp.notify.Notifications
 import io.ofloo.pagerapp.notify.Notifier
+import io.ofloo.pagerapp.p2p.P2PHost
 import io.ofloo.pagerapp.poll.PollScheduler
 
 class MainActivity : ComponentActivity() {
@@ -84,6 +85,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        if (store.p2pModeEnabled) P2PHost.refresh(this, store)
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -103,14 +109,30 @@ class MainActivity : ComponentActivity() {
     private fun consumeShareIntent(intent: Intent?) {
         val action = intent?.action ?: return
         if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
-        val text = intent.getStringExtra(Intent.EXTRA_TEXT)
-        val stream: Uri? = if (action == Intent.ACTION_SEND_MULTIPLE) {
-            intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.firstOrNull()
+        var text = intent.getStringExtra(Intent.EXTRA_TEXT)
+        val streams = mutableListOf<Uri>()
+        if (action == Intent.ACTION_SEND_MULTIPLE) {
+            intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.let(streams::addAll)
         } else {
-            intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+            intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)?.let(streams::add)
+            // Some screenshot/photo providers put the stream only in ClipData.
+            intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.let(streams::addAll)
         }
+        intent.clipData?.let { clip ->
+            for (i in 0 until clip.itemCount) {
+                clip.getItemAt(i).uri?.let(streams::add)
+                if (text.isNullOrBlank()) text = clip.getItemAt(i).text?.toString()
+            }
+        }
+        val stream = streams.firstOrNull { it.scheme != null }
         if (text.isNullOrBlank() && stream == null) return
-        pendingShare = SharePayload(text?.takeIf { it.isNotBlank() }, stream, intent.type)
+        val mime = intent.type
+            ?: intent.clipData?.description?.getMimeType(0)
+        android.util.Log.i(
+            "PagerAPP",
+            "share intent: action=$action type=$mime stream=$stream clip=${intent.clipData != null}",
+        )
+        pendingShare = SharePayload(text?.takeIf { it.isNotBlank() }, stream, mime)
     }
 
     /** A contact tag tapped while the app was closed arrives as an NDEF intent. */

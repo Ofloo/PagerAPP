@@ -37,6 +37,40 @@ class PgpTest {
     }
 
     @Test
+    fun signsAndVerifiesDetachedMessages() {
+        val alice = Pgp.generate("Alice <pagerapp>")
+        val bob = Pgp.generate("Bob <pagerapp>")
+        val sig = Pgp.sign("hello bob", alice.secretArmored)
+        assertTrue(Pgp.verify("hello bob", sig, alice.publicArmored))
+        assertFalse(Pgp.verify("tampered", sig, alice.publicArmored))
+        assertFalse(Pgp.verify("hello bob", sig, bob.publicArmored))
+    }
+
+    @Test
+    fun verifiesKbpgpSignatureAgainstAndroidGeneratedKey() {
+        val pub = javaClass.getResource("/kbpgp/android-pub.asc")!!.readText()
+        val sig = javaClass.getResource("/kbpgp/android-sig.asc")!!.readText()
+        val msg = javaClass.getResource("/kbpgp/android-msg.txt")!!.readText()
+        assertTrue(Pgp.verify(msg, sig, pub))
+        assertFalse(Pgp.verify(msg + "x", sig, pub))
+    }
+
+    @Test
+    fun verifiesDetachedSignatureProducedByKbpgp() {
+        val pub = javaClass.getResource("/kbpgp/pub.asc")!!.readText()
+        val sig = javaClass.getResource("/kbpgp/sig.asc")!!.readText()
+        val msg = javaClass.getResource("/kbpgp/msg.txt")!!.readText()
+        assertTrue(Pgp.verify(msg, sig, pub))
+        assertFalse(Pgp.verify(msg + "x", sig, pub))
+    }
+
+    @Test
+    fun signatureCutoffIsTheNightOfNovemberFirst() {
+        assertFalse(SignaturePolicy.isRequired(1_793_491_199.0))
+        assertTrue(SignaturePolicy.isRequired(1_793_491_200.0))
+    }
+
+    @Test
     fun roundTripsBinaryDataAndFitsTheMessageLimit() {
         val bob = Pgp.generate("Bob <pagerapp>")
         val bytes = ByteArray(30_000) { (it * 31 % 256).toByte() }

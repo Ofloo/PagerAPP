@@ -1,11 +1,13 @@
 package io.ofloo.pagerapp.shared
 
 import org.bouncycastle.bcpg.ArmoredOutputStream
+import org.bouncycastle.bcpg.CompressionAlgorithmTags
 import org.bouncycastle.bcpg.HashAlgorithmTags
 import org.bouncycastle.bcpg.PublicKeyAlgorithmTags
 import org.bouncycastle.bcpg.SymmetricKeyAlgorithmTags
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 import org.bouncycastle.openpgp.PGPCompressedData
+import org.bouncycastle.openpgp.PGPCompressedDataGenerator
 import org.bouncycastle.openpgp.PGPEncryptedDataGenerator
 import org.bouncycastle.openpgp.PGPEncryptedDataList
 import org.bouncycastle.openpgp.PGPKeyPair
@@ -18,6 +20,8 @@ import org.bouncycastle.openpgp.PGPPublicKeyRingCollection
 import org.bouncycastle.openpgp.PGPSecretKey
 import org.bouncycastle.openpgp.PGPSecretKeyRing
 import org.bouncycastle.openpgp.PGPSignature
+import org.bouncycastle.openpgp.operator.jcajce.JcaPGPContentVerifierBuilderProvider
+import org.bouncycastle.openpgp.PGPSignatureList
 import org.bouncycastle.openpgp.PGPSignatureGenerator
 import org.bouncycastle.openpgp.PGPSignatureSubpacketGenerator
 import org.bouncycastle.openpgp.PGPUtil
@@ -231,6 +235,13 @@ object Pgp {
         literalGenerator.open(literal, PGPLiteralData.BINARY, "pagerapp", bytes.size.toLong(), Date())
             .use { it.write(bytes) }
         val literalBytes = literal.toByteArray()
+        // Compress before encryption. Ciphertext is incompressible, and every PGP client can
+        // transparently unwrap the standard compressed-data packet.
+        val compressed = ByteArrayOutputStream()
+        PGPCompressedDataGenerator(CompressionAlgorithmTags.ZIP)
+            .open(compressed)
+            .use { it.write(literalBytes) }
+        val body = compressed.toByteArray()
 
         val out = ByteArrayOutputStream()
         val generator = PGPEncryptedDataGenerator(
@@ -242,9 +253,53 @@ object Pgp {
         generator.addMethod(
             JcePublicKeyKeyEncryptionMethodGenerator(recipient).setProvider(PROVIDER),
         )
-        generator.open(out, literalBytes.size.toLong()).use { it.write(literalBytes) }
+        generator.open(out, body.size.toLong()).use { it.write(body) }
 
         return armorOf { out.writeTo(it) }
+    }
+
+    /** Produces a detached, armored OpenPGP signature over [plaintext]. */
+    fun sign(plaintext: String, secretArmored: String): String {
+        ensureProvider()
+        val ring = PGPSecretKeyRing(
+            PGPUtil.getDecoderStream(ByteArrayInputStream(secretArmored.toByteArray())),
+            JcaKeyFingerprintCalculator(),
+        )
+        val secret = ring.secretKeys.asSequence().firstOrNull { it.isSigningKey }
+            ?: error("no signing key in the secret ring")
+        val privateKey = secret.extractPrivateKey(null)
+        val generator = PGPSignatureGenerator(
+            JcaPGPContentSignerBuilder(secret.publicKey.algorithm, HashAlgorithmTags.SHA256)
+                .setProvider(PROVIDER),
+        )
+        generator.init(PGPSignature.BINARY_DOCUMENT, privateKey)
+        generator.update(plaintext.toByteArray(Charsets.UTF_8))
+        val out = ByteArrayOutputStream()
+        generator.generate().encode(out)
+        return armorOf { out.writeTo(it) }
+    }
+
+    /** Verifies a detached signature over [plaintext] against [publicArmored]. */
+    fun verify(plaintext: String, signatureArmored: String, publicArmored: String): Boolean {
+        ensureProvider()
+        val signatureList = JcaPGPObjectFactory(
+            PGPUtil.getDecoderStream(ByteArrayInputStream(signatureArmored.toByteArray())),
+        ).nextObject() as? PGPSignatureList ?: return false
+        val signature = signatureList.get(0) ?: return false
+        val rings = PGPPublicKeyRingCollection(
+            PGPUtil.getDecoderStream(ByteArrayInputStream(publicArmored.toByteArray())),
+            JcaKeyFingerprintCalculator(),
+        )
+        val publicKey = rings.keyRings.asSequence()
+            .flatMap { it.publicKeys.asSequence() }
+            .firstOrNull { it.keyID == signature.keyID }
+            ?: rings.keyRings.asSequence()
+                .flatMap { it.publicKeys.asSequence() }
+                .firstOrNull { it.isMasterKey }
+            ?: return false
+        signature.init(JcaPGPContentVerifierBuilderProvider().setProvider(PROVIDER), publicKey)
+        signature.update(plaintext.toByteArray(Charsets.UTF_8))
+        return runCatching { signature.verify() }.getOrDefault(false)
     }
 
     /** Decrypts an armored message produced by [encrypt]. */

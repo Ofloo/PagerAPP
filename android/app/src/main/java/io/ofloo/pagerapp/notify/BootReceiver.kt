@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import io.ofloo.pagerapp.data.Store
+import io.ofloo.pagerapp.p2p.P2PHost
 import io.ofloo.pagerapp.poll.PollScheduler
 
 /**
@@ -18,6 +19,10 @@ class BootReceiver : BroadcastReceiver() {
         val store = Store(context)
         if (store.uuid != null && !store.silenceMode) {
             PollScheduler.apply(context, store)
+        }
+        // Nearby sync is opt-in and must survive a reboot like polling does.
+        if (store.p2pModeEnabled) {
+            runCatching { P2PHost.refresh(context, store) }
         }
     }
 }
