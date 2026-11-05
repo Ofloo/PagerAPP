@@ -171,7 +171,8 @@ object Poller {
                 }
                 return@forEach
             }
-            if (payload.optString("from") !in mySenderIds) return@forEach
+            // Old-format envelopes only carry the plain destination; upload any of them, not
+            // just the ones we composed. A relay that reaches the internet can deliver them too.
             val destination = payload.optString("destination").takeIf { it.isNotBlank() }
                 ?: return@forEach
             val outcome = PagerClient.notifyJsonOutcome(store.serverUrl, destination, envelope.payload)

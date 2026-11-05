@@ -416,6 +416,11 @@ fun ChatScreen(
                     )
                     P2PService.start(context)
                     BleP2P.queueChanged()
+                    // If the network is actually back but the first attempt raced, flush now
+                    // instead of waiting for the next poll interval.
+                    withContext(Dispatchers.IO) {
+                        runCatching { Poller.flushP2PQueue(context) }
+                    }
                 } else {
                     store.enqueueSend(
                         QueuedSend(

@@ -275,8 +275,12 @@ object BleP2P {
             val otherVisible = peers.any { (id, seen) ->
                 id != linkedPeer && now - seen.seenAt < 5_000L
             }
+            // With several phones around, poll them in turn: a short idle ends this link and
+            // the next scan result opens the next one. This reaches every peer within seconds
+            // instead of waiting a minute for a rotation.
+            val idleLimit = if (otherVisible) 8_000L else 60_000L
             if (centralConnected &&
-                ((outgoing.isNotEmpty() && silent > 20_000L) || (silent > 60_000L && otherVisible))
+                ((outgoing.isNotEmpty() && silent > 20_000L) || silent > idleLimit)
             ) {
                 recycleClient()
             }
@@ -291,7 +295,7 @@ object BleP2P {
             val best = (if (fresh.isNotEmpty()) fresh else candidates).maxByOrNull { it.value.rssi }
                 ?: return
             linkedPeer = best.key
-            linkedPeerUntil = now + 60_000L
+            linkedPeerUntil = now + 8_000L
             runCatching { clientGatt?.close() }
             clientGatt = null
             connecting = true
