@@ -93,8 +93,11 @@ object PagerClient {
         }
     }
 
-    /** Notify with an explicit outcome, used by the P2P outbox to drop expired/conflict entries. */
-    fun notifyJsonOutcome(serverUrl: String, bearer: String, payloadJson: String): NotifyOutcome {
+    /**
+     * Notify with an explicit outcome. A null [bearer] posts to the P2P path: the server reads
+     * the destination from `mailbox_encrypted` and no Authorization header is allowed there.
+     */
+    fun notifyJsonOutcome(serverUrl: String, bearer: String?, payloadJson: String): NotifyOutcome {
         val conn = open("$serverUrl/notify", "POST", bearer)
         return try {
             conn.outputStream.use { it.write(payloadJson.toByteArray()) }

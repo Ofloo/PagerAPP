@@ -392,6 +392,16 @@ fun ChatScreen(
             if (result.isFailure) {
                 if (store.p2pModeEnabled) {
                     val maxAge = store.p2pMaxAgeSeconds.takeIf { it > 0L } ?: 604800L
+                    val gpgKey = store.p2pPublicKey().takeIf { store.p2pGpgEnabled() }
+                    val encryptedDestination = gpgKey?.let { key ->
+                        withContext(Dispatchers.IO) {
+                            runCatching { Pgp.encrypt(liveContact.outbox, key) }.getOrNull()
+                        }
+                    }
+                    val envelopePayload = JSONObject(payload.toMap()).apply {
+                        // A plain destination UUID would defeat the encrypted P2P routing.
+                        if (!encryptedDestination.isNullOrBlank()) remove("destination")
+                    }
                     store.enqueueP2P(
                         P2PEnvelope(
                             id = mid,
@@ -399,7 +409,9 @@ fun ChatScreen(
                             to = p2pRouteHash(liveContact.outbox),
                             createdAt = createdAt.toLong(),
                             expiresAt = createdAt.toLong() + maxAge,
-                            payload = JSONObject(payload).toString(),
+                            payload = envelopePayload.toString(),
+                            mailboxEncrypted = encryptedDestination,
+                            keyId = store.p2pKeyId().takeIf { encryptedDestination != null },
                         ),
                     )
                     P2PService.start(context)

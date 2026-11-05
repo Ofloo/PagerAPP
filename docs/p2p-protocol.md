@@ -451,9 +451,12 @@ public or trivial. The consequence is deliberately small: GPG has exactly one jo
   is mine"; no decryption. Rotation is **optional**: a stable `sha256(uuid)` works just as well
   for ownership; the bucket only limits linkability for relays, which this threat model treats
   as a nicety, not a requirement.
-- `to_enc` is only the UUID, OpenPGP-encrypted to the **server's** public key. A relay cannot read
-  it; the PagerMCP server decrypts it when the envelope reaches the gateway, so routing works
-  without the relay knowing the destination.
+- `mailbox_encrypted` is only the UUID, OpenPGP-encrypted to the **server's** public key
+  (`/settings → p2p.public_key`, identified by `p2p.key_id`). A relay cannot read it; the PagerMCP
+  server decrypts it when the envelope reaches the gateway, so routing works without the relay
+  knowing the destination. The gateway upload (`POST /notify`) for a P2P envelope carries **no
+  Authorization header** and no plain `uuid`/`destination`; the server routes solely by the
+  decrypted field.
 - The payload is unchanged: already signed/encrypted to the recipient's key.
 
 ### 14.2 What each party learns
@@ -471,15 +474,15 @@ public or trivial. The consequence is deliberately small: GPG has exactly one jo
   identity period. The reply is **signed with that same key**, so the client can pin the key the
   first time and detect a swap. Rotation ships the new key alongside the old one for at least one
   queue lifetime, so envelopes encrypted to the previous key still route.
-- The client never sends its own key material in `to_enc`; only the mailbox UUID.
+- The client never sends its own key material in `mailbox_encrypted`; only the mailbox UUID.
 
-### 14.4 Why `to_enc` if the server can hash too?
+### 14.4 Why `mailbox_encrypted` if the server can hash too?
 
 The server could compute `sha256("<bucket>|<uuid>")` for every mailbox it hosts and match `to`.
-`to_enc` is not required for that. It is kept because it gives O(1) routing for relayed
-envelopes, avoids scanning every mailbox per bucket, and lets the server verify that `to` really
-belongs to the UUID it decrypted (binding). If that is not wanted, drop `to_enc` and route purely
-by hash lookup.
+`mailbox_encrypted` is not required for that. It is kept because it gives O(1) routing for
+relayed envelopes, avoids scanning every mailbox per bucket, and lets the server verify that
+`to` really belongs to the UUID it decrypted (binding). If that is not wanted, drop it and route
+purely by hash lookup.
 
 ### 14.5 What this does not hide
 

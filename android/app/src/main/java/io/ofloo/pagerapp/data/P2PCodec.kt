@@ -14,6 +14,8 @@ fun P2PEnvelope.toJson(): JSONObject = JSONObject()
     .put("payload", payload)
     .put("sig", signature)
     .put("hops", hops)
+    .put("mailbox_encrypted", mailboxEncrypted)
+    .put("key_id", keyId)
 
 fun p2pEnvelopeFromJson(json: JSONObject): P2PEnvelope = P2PEnvelope(
     id = json.optString("id"),
@@ -24,4 +26,7 @@ fun p2pEnvelopeFromJson(json: JSONObject): P2PEnvelope = P2PEnvelope(
     payload = json.optString("payload"),
     signature = json.optString("sig").takeIf { it.isNotBlank() && it != "null" },
     hops = json.optInt("hops", 0),
+    mailboxEncrypted = json.optString("mailbox_encrypted")
+        .takeIf { it.isNotBlank() && it != "null" },
+    keyId = json.optString("key_id").takeIf { it.isNotBlank() && it != "null" },
 )

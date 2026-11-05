@@ -217,8 +217,15 @@ class Store(context: Context) {
         prefs.edit()
             .putBoolean(KEY_P2P_SERVER, settings.p2pEnabled)
             .putLong(KEY_P2P_MAX_AGE, settings.p2pMaxMessageAgeSeconds)
+            .putBoolean(KEY_P2P_GPG, settings.p2pGpgEnabled)
+            .putString(KEY_P2P_PUBLIC_KEY, settings.p2pPublicKey)
+            .putString(KEY_P2P_KEY_ID, settings.p2pKeyId)
             .apply()
     }
+
+    fun p2pGpgEnabled(): Boolean = prefs.getBoolean(KEY_P2P_GPG, false)
+    fun p2pPublicKey(): String = prefs.getString(KEY_P2P_PUBLIC_KEY, "").orEmpty()
+    fun p2pKeyId(): String = prefs.getString(KEY_P2P_KEY_ID, "").orEmpty()
 
     /**
      * Mailboxes this installation owns and polls: the private mailbox, every page address and
@@ -992,6 +999,9 @@ class Store(context: Context) {
         private const val KEY_P2P = "p2p_enabled"
         private const val KEY_P2P_SERVER = "p2p_server_enabled"
         private const val KEY_P2P_MAX_AGE = "p2p_max_age_seconds"
+        private const val KEY_P2P_GPG = "p2p_gpg_enabled"
+        private const val KEY_P2P_PUBLIC_KEY = "p2p_public_key"
+        private const val KEY_P2P_KEY_ID = "p2p_key_id"
         private const val KEY_FCM_LEASES = "fcm_leases"
         private const val KEY_PUSH_IDENTITY = "push_identity"
         private const val KEY_PUSH_IDENTITY_PERIOD = "push_identity_period_seconds"

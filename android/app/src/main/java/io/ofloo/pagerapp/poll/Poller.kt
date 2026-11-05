@@ -141,6 +141,36 @@ object Poller {
             }
             val payload = runCatching { org.json.JSONObject(envelope.payload) }.getOrNull()
                 ?: return@forEach
+            // v2: the destination UUID is encrypted to the owning server, so a relay can upload
+            // an envelope it does not own. No bearer is sent; the server decrypts and routes.
+            val encryptedDestination = envelope.mailboxEncrypted
+            if (!encryptedDestination.isNullOrBlank() && store.p2pGpgEnabled()) {
+                payload.put("p2p", true)
+                payload.put("p2p_id", envelope.id)
+                payload.put("p2p_expires_at", envelope.expiresAt)
+                payload.put("mailbox_encrypted", encryptedDestination)
+                envelope.keyId?.takeIf { it.isNotBlank() }?.let { payload.put("key_id", it) }
+                payload.remove("destination")
+                val outcome = PagerClient.notifyJsonOutcome(
+                    store.serverUrl,
+                    null,
+                    payload.toString(),
+                )
+                when (outcome.kind) {
+                    NotifyKind.OK,
+                    NotifyKind.DUPLICATE -> {
+                        store.markP2PDelivered(envelope.id)
+                        Log.i(TAG, "P2P envelope delivered via GPG gateway: ${envelope.id}")
+                    }
+                    NotifyKind.EXPIRED,
+                    NotifyKind.CONFLICT -> {
+                        store.removeP2P(envelope.id)
+                        Log.w(TAG, "P2P envelope dropped (${outcome.kind}): ${envelope.id}")
+                    }
+                    else -> {}
+                }
+                return@forEach
+            }
             if (payload.optString("from") !in mySenderIds) return@forEach
             val destination = payload.optString("destination").takeIf { it.isNotBlank() }
                 ?: return@forEach

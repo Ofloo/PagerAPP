@@ -35,6 +35,10 @@ data class ServerSettings(
     val p2pMaxMessageAgeSeconds: Long = 0L,
     val p2pMaxEntries: Int = 0,
     val p2pMaxPerMailbox: Int = 0,
+    /** PagerMCP's P2P GPG key: relays encrypt the destination UUID to it. */
+    val p2pGpgEnabled: Boolean = false,
+    val p2pPublicKey: String = "",
+    val p2pKeyId: String = "",
     /**
      * Which identity a push subscription uses. PagerMCP may switch from the mailbox UUID to an
      * anonymised route hash (optionally rotating). Reported as `subscriptions.identity`.
@@ -104,6 +108,9 @@ data class ServerSettings(
                 p2pMaxMessageAgeSeconds = (p2p?.opt("max_message_age_seconds") as? Number)?.toLong() ?: 0L,
                 p2pMaxEntries = (p2p?.opt("max_entries") as? Number)?.toInt() ?: 0,
                 p2pMaxPerMailbox = (p2p?.opt("max_per_mailbox") as? Number)?.toInt() ?: 0,
+                p2pGpgEnabled = p2p?.optBoolean("gpg_enabled", false) ?: false,
+                p2pPublicKey = p2p?.optString("public_key")?.takeIf { it.isNotBlank() } ?: "",
+                p2pKeyId = p2p?.optString("key_id")?.takeIf { it.isNotBlank() } ?: "",
                 pushIdentityMode = listOf("identity", "route_identity", "fcm_identity")
                     .firstNotNullOfOrNull { key ->
                         subs?.optString(key)?.takeIf { it.isNotBlank() && it != "null" }

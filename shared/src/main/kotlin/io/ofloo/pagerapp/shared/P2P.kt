@@ -18,6 +18,14 @@ data class P2PEnvelope(
     val payload: String,
     val signature: String? = null,
     val hops: Int = 0,
+    /**
+     * The destination UUID, OpenPGP-encrypted to the PagerMCP server's public key. Relays can
+     * upload the envelope without ever seeing which mailbox it is for; only the owning server
+     * decrypts it. Null on servers without the GPG P2P path.
+     */
+    val mailboxEncrypted: String? = null,
+    /** Which server key was used, so the owning server can pick the right private key. */
+    val keyId: String? = null,
 ) {
     fun isExpired(nowSeconds: Long = System.currentTimeMillis() / 1000L): Boolean =
         expiresAt <= nowSeconds
