@@ -892,6 +892,10 @@ fun ChatScreen(
                                             horizontalArrangement = Arrangement.spacedBy(3.dp),
                                             verticalAlignment = Alignment.CenterVertically,
                                         ) {
+                                            if (entry.pending) {
+                                                PendingAge(entry.createdAt)
+                                                Spacer(Modifier.width(3.dp))
+                                            }
                                             if (notEncrypted || badSignature || sendFailed) WarningIcon(iconColor)
                                             if (entry.encrypted || cryptoSigned) {
                                                 CryptoStateIcon(
@@ -1080,6 +1084,24 @@ fun ChatScreen(
             )
         }
     }
+}
+
+@Composable
+private fun PendingAge(createdAt: Double) {
+    fun minutesNow(): Int =
+        ((System.currentTimeMillis() / 1000.0 - createdAt) / 60.0).toInt().coerceAtLeast(0)
+    var minutes by remember(createdAt) { mutableStateOf(minutesNow()) }
+    LaunchedEffect(createdAt) {
+        while (true) {
+            minutes = minutesNow()
+            delay(15_000)
+        }
+    }
+    Text(
+        "${minutes}m",
+        fontSize = 9.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 @Composable
