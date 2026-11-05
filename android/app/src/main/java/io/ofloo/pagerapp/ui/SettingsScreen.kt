@@ -554,8 +554,27 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.labelSmall,
                 )
                 TextButton(onClick = {
-                    runCatching {
-                        context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                    val exempt = power?.isIgnoringBatteryOptimizations(context.packageName) == true
+                    if (!exempt) {
+                        // One tap: the system asks "allow PagerAPP to run in the background?".
+                        runCatching {
+                            context.startActivity(
+                                Intent(
+                                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                    Uri.parse("package:${context.packageName}"),
+                                ),
+                            )
+                        }.recoverCatching {
+                            context.startActivity(
+                                Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+                            )
+                        }
+                    } else {
+                        runCatching {
+                            context.startActivity(
+                                Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+                            )
+                        }
                     }
                     batteryExempt = power?.isIgnoringBatteryOptimizations(context.packageName) == true
                 }) {
