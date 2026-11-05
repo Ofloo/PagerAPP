@@ -334,6 +334,7 @@ object BleP2P {
                 if (device != null) {
                     serverDevice = device
                     serverReaders[device.address]?.reset()
+                    sending = false
                     Log.i(TAG, "BLE peer connected (peripheral)")
                 }
                 lastLinkActivity = System.currentTimeMillis()
@@ -369,6 +370,10 @@ object BleP2P {
                 notifyReady = true
                 if (device != null) notifyDevices.add(device.address)
                 server?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
+                // A fresh link must never inherit a stuck "sending" flag or frames from the
+                // previous connection; otherwise the peer never announces its queue.
+                sending = false
+                outgoing.clear()
                 sendJson(JSONObject().put("t", "hello"), device)
                 sendHaveTo(device)
             } else if (responseNeeded) {
