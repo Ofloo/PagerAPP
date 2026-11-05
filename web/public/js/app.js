@@ -603,6 +603,31 @@ async function contactKeyManager(contact) {
   return km;
 }
 
+async function verifyDetached(km, clear, armoredSig) {
+  if (!armoredSig) return false;
+  const [errA, decoded] = kbpgp.armor.decode(armoredSig);
+  if (errA || !decoded) return false;
+  const [errP, packets] = kbpgp.parser.parse(decoded.body);
+  if (errP) return false;
+  return new Promise((resolve) => {
+    kbpgp.verify({ data: kbpgp.Buffer.from(clear, 'utf8'), packets, keyfetch: km }, (err) => {
+      resolve(!err);
+    });
+  });
+}
+
+async function checkSignature(contact, clear, page, own = false) {
+  const required = Number(page.created_at || 0) >= SIGNATURE_REQUIRED_FROM;
+  if (!required) return null;
+  if (!page.sig) return false;
+  try {
+    const km = own ? await ensureOwnKey() : await contactKeyManager(contact);
+    return await verifyDetached(km, clear, page.sig);
+  } catch (error) {
+    return false;
+  }
+}
+
 async function decryptArmored(armored) {
   if (!armored) return null;
   const own = await ensureOwnKey();
@@ -992,6 +1017,9 @@ async function pollContact(contact) {
         }
       }
       const attachment = await attachmentForMessage(clear);
+      const signatureValid = decrypted
+        ? await checkSignature(contact, clear, page)
+        : (page.sig ? false : null);
       addHistory({
         id: page.id,
         status: 10,
@@ -1019,6 +1047,7 @@ async function pollContact(contact) {
         replyFrom: page.reply_from,
         replyFromName: page.reply_from_name,
         sig: page.sig,
+        signatureValid,
       });
       if (page.mid) sendDeliveryReceipt(contact, page.mid);
       if (state.activeContact === contactKey(contact)) markThreadRead(contact);
@@ -1061,6 +1090,9 @@ async function pollOwnCopies() {
           catch { clear = '🔒 encrypted — no usable key'; }
         }
         const attachment = await attachmentForMessage(clear);
+        const signatureValid = decrypted
+          ? await checkSignature(contact, clear, page, true)
+          : (page.sig ? false : null);
         addHistory({
           id: page.id,
           status: 10,
@@ -1081,7 +1113,7 @@ async function pollOwnCopies() {
           acked: false,
           remoteDelivered: false,
           sig: page.sig,
-          signatureValid: page.sig ? true : null,
+          signatureValid,
           attachmentUrl: attachment?.url,
           attachmentName: attachment?.name,
           attachmentMime: attachment?.mime,

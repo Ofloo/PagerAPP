@@ -399,3 +399,93 @@ fields and unknown frame types.
 - Tapping a page notification carries the page id (and, for chat, the peer id) in the intent; the
   activity is expected to reuse its existing instance (`singleTop` + `onNewIntent`), not open a
   second session.
+
+### 13.10 Anonymity: what the route hash hides and what it does not
+
+- **A route hash is a pseudonym, not a secret.** `sha256(lowercase(uuid))` is computable by
+  anyone who knows the mailbox UUID, and the UUID *is* the bearer. The hash keeps the UUID out of
+  logs, topics and push bookkeeping; it does not protect against someone who already holds the
+  UUID.
+- **Rotation gives unlinkability over time, not secrecy.** With
+  `sha256("<bucket>|<uuid>")` an observer who does *not* know the UUID cannot correlate the
+  buckets with each other or with the stable BLE hash. With previous/current/next registration a
+  clock skew or a period boundary cannot cause missed wake-ups.
+- **The PagerMCP server still learns the UUID at registration** (path plus `Authorization`
+  bearer). Hiding it from the server itself would require an unauthenticated, hash-only
+  registration endpoint, with its own abuse/rate-limit design; that is not part of this profile.
+- **Keep the payload content-less.** FCM/APNs/UnifiedPush wake-ups carry no page content; the app
+  fetches over TLS after waking. The push provider only sees a token/topic and timing.
+- **Do not log identifiers.** The client logs at most an 8-hex-character route prefix for
+  diagnostics, never the UUID, bearer, FCM token or key material.
+- **BLE metadata is visible to nearby peers.** `have`/`want`/`ack` expose envelope ids, queue
+  sizes, timing and route hashes; the payload itself stays end-to-end encrypted. No bearer or raw
+  public key is advertised. An 8-hex prefix is enough to route, and the full 64-char hash never
+  leaves the device over BLE.
+
+## 14. v2 envelope: the UUID is never readable on the wire
+
+Status: proposal, not implemented.
+
+**Threat model: the UUID is the only secret.** Everything else in the header — the envelope id,
+`created_at`, `expires_at`, sizes, timing, even a stable `sha256(uuid)` route — is considered
+public or trivial. The consequence is deliberately small: GPG has exactly one job, keeping the
+**UUID** unreadable on the wire. The rest stays plaintext; do not over-engineer header secrecy.
+
+### 14.1 Fields
+
+```json
+{"v":2,
+ "id":"<envelope uuid>",
+ "to":"<sha256("<bucket>|<uuid>") hex>",
+ "to_enc":"<OpenPGP(uuid, server public key)>",
+ "created_at":1790000000,
+ "expires_at":1790604800,
+ "payload":"<PagerMCP chat JSON, E2E encrypted to the recipient>"}
+```
+
+- `bucket = created_at / period` (period comes from the server's `/settings`, e.g. 3600). The
+  sender computes `to` from the same `created_at` it puts in the envelope, so no clock alignment
+  is needed.
+- `to` is a per-bucket pseudonym. The recipient hashes **each mailbox it owns** (private mailbox,
+  page addresses, contact inboxes) with the envelope's bucket and compares. A match means "this
+  is mine"; no decryption. Rotation is **optional**: a stable `sha256(uuid)` works just as well
+  for ownership; the bucket only limits linkability for relays, which this threat model treats
+  as a nicety, not a requirement.
+- `to_enc` is only the UUID, OpenPGP-encrypted to the **server's** public key. A relay cannot read
+  it; the PagerMCP server decrypts it when the envelope reaches the gateway, so routing works
+  without the relay knowing the destination.
+- The payload is unchanged: already signed/encrypted to the recipient's key.
+
+### 14.2 What each party learns
+
+| Party | Learns |
+|---|---|
+| Relay peer | `id`, `created_at`, sizes, timing; a per-bucket hash it cannot invert |
+| Recipient | that `to` matches one of its mailboxes (by hashing its own UUIDs) |
+| Server (gateway) | the UUID from `to_enc`, and can verify `to` against it |
+| Anyone holding the UUID | can compute `to` and recognise the mailbox — the UUID is the bearer anyway |
+
+### 14.3 Server key distribution
+
+- `GET /settings` carries the server's OpenPGP public key (and a key id/fingerprint) plus the
+  identity period. The reply is **signed with that same key**, so the client can pin the key the
+  first time and detect a swap. Rotation ships the new key alongside the old one for at least one
+  queue lifetime, so envelopes encrypted to the previous key still route.
+- The client never sends its own key material in `to_enc`; only the mailbox UUID.
+
+### 14.4 Why `to_enc` if the server can hash too?
+
+The server could compute `sha256("<bucket>|<uuid>")` for every mailbox it hosts and match `to`.
+`to_enc` is not required for that. It is kept because it gives O(1) routing for relayed
+envelopes, avoids scanning every mailbox per bucket, and lets the server verify that `to` really
+belongs to the UUID it decrypted (binding). If that is not wanted, drop `to_enc` and route purely
+by hash lookup.
+
+### 14.5 What this does not hide
+
+- The sender's and recipient's **traffic patterns** (timing, sizes, frequency) are still visible
+  to relays.
+- The server already knows the UUID (it is the bearer); `to_enc` hides the UUID from relays, not
+  from the server.
+- `id` is stable across relays for dedupe, so the same message can be correlated between relays,
+  but not linked to a mailbox.
