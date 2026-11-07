@@ -26,7 +26,10 @@ class P2PTest {
         val chunks = P2PChunker.split("transfer-2", bytes, 7)
         val assembler = P2PAssembler("transfer-2", chunks.size, sha)
         chunks.forEach { assertTrue(assembler.accept(it)) }
+        val totalBytes = chunks.sumOf { it.data.size }
+        assertEquals(totalBytes, assembler.bufferedBytes)
         chunks.forEach { assertTrue(assembler.accept(it)) }
+        assertEquals(totalBytes, assembler.bufferedBytes)
         assertTrue(assembler.finish()!!.contentEquals(bytes))
     }
 

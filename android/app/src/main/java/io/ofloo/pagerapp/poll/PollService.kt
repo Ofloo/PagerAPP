@@ -1,20 +1,24 @@
 package io.ofloo.pagerapp.poll
 
+import android.Manifest
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
-import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
-import io.ofloo.pagerapp.R
 import io.ofloo.pagerapp.data.Store
 import io.ofloo.pagerapp.net.PagerClient
+import io.ofloo.pagerapp.net.ServerSettingsCache
 import io.ofloo.pagerapp.notify.Notifications
 import io.ofloo.pagerapp.notify.Notifier
 import io.ofloo.pagerapp.notify.RepeatAlerts
+import io.ofloo.pagerapp.notify.ServiceNotification
 import io.ofloo.pagerapp.p2p.BleP2P
 import io.ofloo.pagerapp.shared.Contact
 import java.util.concurrent.atomic.AtomicInteger
@@ -63,12 +67,44 @@ class PollService : Service() {
 
     private val repeatCounter = AtomicInteger(0)
 
+    private val main = Handler(Looper.getMainLooper())
+    private var lastServiceText: String? = null
+    private var lastServiceP2p: Boolean? = null
+    private val serviceNotificationTick = object : Runnable {
+        override fun run() {
+            refreshServiceNotification()
+            main.postDelayed(this, 2_000L)
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         Notifications.ensureChannels(this)
-        startForeground(NOTIF_ID, foregroundNotification())
+        val p2pEnabled = Store(this).p2pModeEnabled
+        val text = ServiceNotification.text(this, p2pEnabled)
+        lastServiceText = text
+        lastServiceP2p = p2pEnabled
+        startForeground(NOTIF_ID, ServiceNotification.build(this, text, p2pEnabled))
         // Nearby sync rides on this service so the user sees one notification, not two.
-        if (Store(this).p2pModeEnabled) BleP2P.start(this)
+        if (p2pEnabled) BleP2P.start(this)
+        main.postDelayed(serviceNotificationTick, 1_000L)
+    }
+
+    private fun refreshServiceNotification() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        val p2pEnabled = Store(this).p2pModeEnabled
+        val text = ServiceNotification.text(this, p2pEnabled)
+        if (text == lastServiceText && p2pEnabled == lastServiceP2p) return
+        lastServiceText = text
+        lastServiceP2p = p2pEnabled
+        NotificationManagerCompat.from(this).notify(
+            NOTIF_ID,
+            ServiceNotification.build(this, text, p2pEnabled),
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -82,6 +118,7 @@ class PollService : Service() {
 
     override fun onDestroy() {
         running = false
+        main.removeCallbacks(serviceNotificationTick)
         streamThread.interrupt()
         pollThread.interrupt()
         repeatThread.interrupt()
@@ -99,7 +136,9 @@ class PollService : Service() {
         while (running) {
             val store = Store(this)
             val own = store.uuid
-            if (own != null && streams[own]?.isAlive != true) {
+            if (own != null && ServerSettingsCache.get(store.serverUrl)?.sseEnabled != false &&
+                streams[own]?.isAlive != true
+            ) {
                 streams[own] = thread(
                     start = true,
                     isDaemon = true,
@@ -108,7 +147,9 @@ class PollService : Service() {
                 )
             }
             store.pageMailboxes().forEach { address ->
-                if (streams[address.uuid]?.isAlive != true) {
+                if (ServerSettingsCache.get(address.serverUrl)?.sseEnabled != false &&
+                    streams[address.uuid]?.isAlive != true
+                ) {
                     streams[address.uuid] = thread(
                         start = true,
                         isDaemon = true,
@@ -126,7 +167,9 @@ class PollService : Service() {
         var backoffMs = 1_000L
         while (running) {
             try {
-                PagerClient.streamEvents(serverUrl, mailbox) { page ->
+                val keepalive = ServerSettingsCache.get(serverUrl)?.sseKeepaliveSeconds ?: 15
+                val readTimeoutMs = (keepalive * 3 + 15).coerceAtLeast(30) * 1000
+                PagerClient.streamEvents(serverUrl, mailbox, readTimeoutMs) { page ->
                     Poller.handlePages(this, mailbox, serverUrl, contact, listOf(page))
                 }
                 backoffMs = 1_000L
@@ -224,15 +267,6 @@ class PollService : Service() {
         lock.acquire(90_000L)
         return lock
     }
-
-    private fun foregroundNotification() =
-        NotificationCompat.Builder(this, Notifications.CHANNEL_SERVICE)
-            .setSmallIcon(R.drawable.ic_launcher)
-            .setContentTitle(getString(R.string.app_name))
-            .setContentText(getString(R.string.poll_channel_name))
-            .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_MIN)
-            .build()
 
     companion object {
         private const val TAG = "PagerAPP"

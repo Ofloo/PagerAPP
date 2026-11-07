@@ -26,6 +26,11 @@ data class P2PEnvelope(
     val mailboxEncrypted: String? = null,
     /** Which server key was used, so the owning server can pick the right private key. */
     val keyId: String? = null,
+    /**
+     * The PagerMCP server that owns the destination mailbox. A relay must upload there; using
+     * its own server would strand cross-server P2P messages. Null means the relay's own server.
+     */
+    val server: String? = null,
 ) {
     fun isExpired(nowSeconds: Long = System.currentTimeMillis() / 1000L): Boolean =
         expiresAt <= nowSeconds
@@ -87,10 +92,18 @@ class P2PAssembler(
     val total: Int,
     private val expectedSha256: String,
 ) {
+    init {
+        require(total in 1..512)
+    }
+
     private val chunks = arrayOfNulls<ByteArray>(total)
     private var received = 0
+    private var receivedBytes = 0
 
     val isComplete: Boolean get() = received == total
+    val bufferedBytes: Int get() = receivedBytes
+    /** Accepted (possibly out-of-order) chunks, for progress displays. */
+    val receivedChunks: Int get() = received
 
     /** Returns true when a new, valid chunk was accepted. */
     fun accept(chunk: P2PChunk): Boolean {
@@ -101,6 +114,7 @@ class P2PAssembler(
         if (chunks[chunk.seq] != null) return true // duplicate is idempotent
         chunks[chunk.seq] = chunk.data
         received++
+        receivedBytes += chunk.data.size
         return true
     }
 

@@ -39,6 +39,11 @@ data class ServerSettings(
     val p2pGpgEnabled: Boolean = false,
     val p2pPublicKey: String = "",
     val p2pKeyId: String = "",
+    /** Federated peer mesh: unknown key fingerprints redirect to the owning instance. */
+    val meshEnabled: Boolean = false,
+    val meshPeers: Int = 0,
+    val meshMaxHops: Int = 3,
+    val meshHashPeriodSeconds: Long = 0L,
     /**
      * Which identity a push subscription uses. PagerMCP may switch from the mailbox UUID to an
      * anonymised route hash (optionally rotating). Reported as `subscriptions.identity`.
@@ -83,6 +88,7 @@ data class ServerSettings(
             val subs = json.optJSONObject("subscriptions")
             val webclient = json.optJSONObject("webclient")
             val p2p = json.optJSONObject("p2p")
+            val mesh = json.optJSONObject("mesh")
             return ServerSettings(
                 version = json.optString("version", "?"),
                 build = json.optString("build", "?"),
@@ -111,6 +117,10 @@ data class ServerSettings(
                 p2pGpgEnabled = p2p?.optBoolean("gpg_enabled", false) ?: false,
                 p2pPublicKey = p2p?.optString("public_key")?.takeIf { it.isNotBlank() } ?: "",
                 p2pKeyId = p2p?.optString("key_id")?.takeIf { it.isNotBlank() } ?: "",
+                meshEnabled = mesh?.optBoolean("enabled", false) ?: false,
+                meshPeers = (mesh?.opt("peers") as? Number)?.toInt() ?: 0,
+                meshMaxHops = (mesh?.opt("max_hops") as? Number)?.toInt()?.takeIf { it > 0 } ?: 3,
+                meshHashPeriodSeconds = (mesh?.opt("hash_period_seconds") as? Number)?.toLong() ?: 0L,
                 pushIdentityMode = listOf("identity", "route_identity", "fcm_identity")
                     .firstNotNullOfOrNull { key ->
                         subs?.optString(key)?.takeIf { it.isNotBlank() && it != "null" }

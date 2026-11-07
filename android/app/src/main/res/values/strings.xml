@@ -1,7 +1,30 @@
 <resources>
     <string name="app_name">PagerAPP</string>
     <string name="poll_channel_name">PagerAPP service</string>
-    <string name="p2p_channel_name">Nearby sync active</string>
+    <string name="p2p_channel_name">P2P Telemetry</string>
+    <string name="p2p_channel_desc">Nearby P2P peers, signal strength and connection state</string>
+    <string name="poll_no_p2p">Polling · nearby sync off</string>
+    <string name="p2p_no_peers">Nearby sync · no peers in range</string>
+    <string name="p2p_no_peers_short">no peers</string>
+    <plurals name="p2p_peers_nearby">
+        <item quantity="one">%1$d peer nearby</item>
+        <item quantity="other">%1$d peers nearby</item>
+    </plurals>
+    <plurals name="p2p_queued">
+        <item quantity="one">%1$d queued</item>
+        <item quantity="other">%1$d queued</item>
+    </plurals>
+    <string name="p2p_signal_one">%1$d dBm</string>
+    <string name="p2p_signal_best">best %1$d dBm</string>
+    <string name="p2p_connected">connected</string>
+    <string name="p2p_sending">Sending %1$d/%2$d</string>
+    <string name="p2p_receiving">Receiving %1$d/%2$d</string>
+    <string name="p2p_sent">Sent %1$d/%2$d</string>
+    <string name="p2p_received">Received %1$d/%2$d</string>
+    <string name="p2p_syncing">Syncing</string>
+    <string name="p2p_idle">Idle</string>
+    <string name="p2p_connecting">Connecting</string>
+    <string name="p2p_scanning">Scanning</string>
     <string name="notif_channel_name">Pages</string>
     <string name="notif_channel_desc">Incoming PagerMCP pages</string>
     <string name="msg_channel_name">Messages</string>

@@ -97,31 +97,66 @@ object PagerClient {
      * Notify with an explicit outcome. A null [bearer] posts to the P2P path: the server reads
      * the destination from `mailbox_encrypted` and no Authorization header is allowed there.
      */
-    fun notifyJsonOutcome(serverUrl: String, bearer: String?, payloadJson: String): NotifyOutcome {
-        val conn = open("$serverUrl/notify", "POST", bearer)
-        return try {
-            conn.outputStream.use { it.write(payloadJson.toByteArray()) }
-            val code = conn.responseCode
-            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-            val body = stream?.bufferedReader()?.use(BufferedReader::readText).orEmpty()
-            when (code) {
-                200, 201, 202 -> {
-                    val duplicate = runCatching { JSONObject(body).optBoolean("duplicate", false) }
-                        .getOrDefault(false)
-                    val id = runCatching { JSONObject(body).optString("id").takeIf(String::isNotBlank) }
-                        .getOrNull()
-                    NotifyOutcome(if (duplicate) NotifyKind.DUPLICATE else NotifyKind.OK, id)
+    fun notifyJsonOutcome(
+        serverUrl: String,
+        bearer: String?,
+        payloadJson: String,
+        maxRedirects: Int = 3,
+    ): NotifyOutcome {
+        var url = "$serverUrl/notify"
+        var redirects = 0
+        while (true) {
+            val conn = open(url, "POST", bearer)
+            conn.instanceFollowRedirects = false
+            var redirectTo: String? = null
+            val outcome: NotifyOutcome? = try {
+                conn.outputStream.use { it.write(payloadJson.toByteArray()) }
+                val code = conn.responseCode
+                // A P2P upload carries no bearer; the owning server may answer 302 with the
+                // instance that holds the key named by key_id. Re-POST the same body there.
+                if (bearer == null && code in 301..308) {
+                    val location = conn.getHeaderField("Location")
+                    if (location.isNullOrBlank() || redirects >= maxRedirects.coerceAtLeast(1)) {
+                        NotifyOutcome(NotifyKind.RETRY, error = "HTTP $code without a usable Location")
+                    } else {
+                        val next = runCatching { URL(URL(url), location).toString() }.getOrNull()
+                        if (next == null || (!next.startsWith("http://") && !next.startsWith("https://"))) {
+                            NotifyOutcome(NotifyKind.RETRY, error = "bad redirect Location")
+                        } else {
+                            redirectTo = next
+                            redirects++
+                            null
+                        }
+                    }
+                } else {
+                    val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                    val body = stream?.bufferedReader()?.use(BufferedReader::readText).orEmpty()
+                    when (code) {
+                        200, 201, 202 -> {
+                            val duplicate = runCatching { JSONObject(body).optBoolean("duplicate", false) }
+                                .getOrDefault(false)
+                            val id = runCatching { JSONObject(body).optString("id").takeIf(String::isNotBlank) }
+                                .getOrNull()
+                            NotifyOutcome(if (duplicate) NotifyKind.DUPLICATE else NotifyKind.OK, id)
+                        }
+                        410 -> NotifyOutcome(NotifyKind.EXPIRED, error = body.ifBlank { "p2p message expired" })
+                        409 -> NotifyOutcome(NotifyKind.CONFLICT, error = body.ifBlank { "p2p_id conflict" })
+                        403 -> NotifyOutcome(NotifyKind.DISABLED, error = body.ifBlank { "p2p dedupe is not enabled" })
+                        429 -> NotifyOutcome(NotifyKind.FULL, error = body.ifBlank { "mailbox is full" })
+                        else -> NotifyOutcome(NotifyKind.RETRY, error = "HTTP $code: $body")
+                    }
                 }
-                410 -> NotifyOutcome(NotifyKind.EXPIRED, error = body.ifBlank { "p2p message expired" })
-                409 -> NotifyOutcome(NotifyKind.CONFLICT, error = body.ifBlank { "p2p_id conflict" })
-                403 -> NotifyOutcome(NotifyKind.DISABLED, error = body.ifBlank { "p2p dedupe is not enabled" })
-                429 -> NotifyOutcome(NotifyKind.FULL, error = body.ifBlank { "mailbox is full" })
-                else -> NotifyOutcome(NotifyKind.RETRY, error = "HTTP $code: $body")
+            } catch (error: Throwable) {
+                NotifyOutcome(NotifyKind.RETRY, error = error.message ?: error.javaClass.simpleName)
+            } finally {
+                conn.disconnect()
             }
-        } catch (error: Throwable) {
-            NotifyOutcome(NotifyKind.RETRY, error = error.message ?: error.javaClass.simpleName)
-        } finally {
-            conn.disconnect()
+            val next = redirectTo
+            if (next != null) {
+                url = next
+                continue
+            }
+            return outcome ?: NotifyOutcome(NotifyKind.RETRY, error = "notify failed")
         }
     }
 
@@ -208,11 +243,16 @@ object PagerClient {
         }
     }
 
-    fun streamEvents(serverUrl: String, uuid: String, onPage: (Page) -> Unit) {
+    fun streamEvents(
+        serverUrl: String,
+        uuid: String,
+        readTimeoutMs: Int = 60_000,
+        onPage: (Page) -> Unit,
+    ) {
         val conn = URL("$serverUrl/mailboxes/$uuid/events").openConnection() as HttpURLConnection
         conn.requestMethod = "GET"
         conn.connectTimeout = 15_000
-        conn.readTimeout = 60_000
+        conn.readTimeout = readTimeoutMs
         conn.setRequestProperty("Authorization", "Bearer $uuid")
         conn.setRequestProperty("Accept", "text/event-stream")
         try {
@@ -367,16 +407,19 @@ object PagerClient {
     }
 
     /** `GET /settings` — the server's effective, non-secret settings (PagerMCP 0.6.0+). */
-    fun settings(serverUrl: String): ServerSettings {
+    /** Parsed settings plus the raw body, so the client can cache it verbatim for offline use. */
+    fun settingsRaw(serverUrl: String): Pair<ServerSettings, String> {
         val conn = open("$serverUrl/settings", "GET", null)
         try {
             require(conn.responseCode in 200..299) { "settings HTTP ${conn.responseCode}" }
             val body = conn.inputStream.bufferedReader().use(BufferedReader::readText)
-            return ServerSettings.parse(JSONObject(body))
+            return ServerSettings.parse(JSONObject(body)) to body
         } finally {
             conn.disconnect()
         }
     }
+
+    fun settings(serverUrl: String): ServerSettings = settingsRaw(serverUrl).first
 
     private fun parsePage(json: String): Page =
         PageParser.parse(JSONObject(json).toMap())

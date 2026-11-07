@@ -12,10 +12,10 @@ import io.ofloo.pagerapp.data.Store
 object WebclientMode {
     private const val TAG = "PagerAPP"
     private const val RECHECK_SECONDS = 300L
-    private const val SETTINGS_RECHECK_MS = 10 * 60_000L
+
 
     private val modeExpiries = mutableMapOf<String, Long>()
-    private val settingsCache = mutableMapOf<String, Pair<Long, ServerSettings>>()
+
     private var lastGoodCheckAt = 0L
     private var lastTargetsKey = ""
 
@@ -130,16 +130,5 @@ object WebclientMode {
         return ok
     }
 
-    private fun settings(server: String): ServerSettings? {
-        val now = System.currentTimeMillis()
-        settingsCache[server]?.let { (at, cached) ->
-            if (now - at < SETTINGS_RECHECK_MS) return cached
-        }
-        val fresh = runCatching { PagerClient.settings(server) }
-            .onFailure { Log.w(TAG, "webclient settings failed for $server: ${it.message}") }
-            .getOrNull()
-            ?: return settingsCache[server]?.second
-        settingsCache[server] = now to fresh
-        return fresh
-    }
+    private fun settings(server: String): ServerSettings? = ServerSettingsCache.get(server)
 }

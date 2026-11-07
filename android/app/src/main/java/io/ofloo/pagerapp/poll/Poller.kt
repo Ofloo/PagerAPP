@@ -6,9 +6,11 @@ import io.ofloo.pagerapp.data.HistoryEntry
 import io.ofloo.pagerapp.data.Store
 import io.ofloo.pagerapp.net.NotifyKind
 import io.ofloo.pagerapp.net.PagerClient
+import io.ofloo.pagerapp.net.ServerSettingsCache
 import io.ofloo.pagerapp.net.WebclientMode
 import io.ofloo.pagerapp.notify.Notifications
 import io.ofloo.pagerapp.notify.Notifier
+import io.ofloo.pagerapp.p2p.P2PReceiver
 import io.ofloo.pagerapp.push.PushManager
 import io.ofloo.pagerapp.ui.ChatPhotos
 import io.ofloo.pagerapp.ui.PhotoShare
@@ -19,6 +21,7 @@ import io.ofloo.pagerapp.shared.Page
 import io.ofloo.pagerapp.shared.FileLink
 import io.ofloo.pagerapp.shared.PhotoLink
 import io.ofloo.pagerapp.shared.STATUS_MESSAGE
+import io.ofloo.pagerapp.shared.Pgp
 import io.ofloo.pagerapp.shared.SignaturePolicy
 import io.ofloo.pagerapp.shared.buildDeliveryReceipt
 import io.ofloo.pagerapp.shared.decide
@@ -26,7 +29,6 @@ import io.ofloo.pagerapp.shared.decideForContact
 import io.ofloo.pagerapp.shared.publicKeyFrom
 import io.ofloo.pagerapp.shared.readableText
 import io.ofloo.pagerapp.shared.shouldAck
-import io.ofloo.pagerapp.shared.Pgp
 import java.time.LocalTime
 
 /**
@@ -39,6 +41,14 @@ import java.time.LocalTime
 object Poller {
 
     private const val TAG = "PagerAPP"
+
+    /** How long BLE gets a custody envelope before a relay offers the same bytes to the gateway. */
+    private const val RELAY_GRACE_SECONDS = 15L
+
+    /** Envelope ids already uploaded by this process, so a poll does not spam the server. */
+    private val relayed = HashSet<String>()
+
+
 
     /** Extend an existing key this many days before it lapses. */
     private const val KEY_RENEW_LEAD_DAYS = 30L
@@ -60,26 +70,25 @@ object Poller {
         val settingsDue = store.p2pModeEnabled ||
             nowMs - store.settingsCheckedAt > 30 * 60_000L
         if (settingsDue) {
-            runCatching { PagerClient.settings(store.serverUrl) }
-                .onSuccess { settings ->
-                    store.cacheP2pSettings(settings)
-                    store.cachePushIdentity(settings)
-                    store.settingsCheckedAt = nowMs
-                    Log.i(
-                        TAG,
-                        "server settings: identity=${settings.pushIdentityMode} " +
-                            "period=${settings.pushIdentityPeriodSeconds}s " +
-                            "time=${settings.serverTimeSeconds ?: "?"}",
-                    )
-                    store.uuid?.let { id ->
-                        store.pushRoutes(id)?.let { routes ->
-                            Log.i(TAG, "push routes: ${routes.map { it.take(8) }}")
-                        }
+            val settings = ServerSettingsCache.get(store.serverUrl)
+            if (settings != null) {
+                store.cacheP2pSettings(settings)
+                store.cachePushIdentity(settings)
+                store.settingsCheckedAt = nowMs
+                Log.i(
+                    TAG,
+                    "server settings: identity=${settings.pushIdentityMode} " +
+                        "period=${settings.pushIdentityPeriodSeconds}s " +
+                        "time=${settings.serverTimeSeconds ?: "?"}",
+                )
+                store.uuid?.let { id ->
+                    store.pushRoutes(id)?.let { routes ->
+                        Log.i(TAG, "push routes: ${routes.map { it.take(8) }}")
                     }
                 }
-                .onFailure {
-                    if (store.p2pModeEnabled) Log.w(TAG, "settings refresh failed: ${it.message}")
-                }
+            } else if (store.p2pModeEnabled) {
+                Log.w(TAG, "settings refresh failed")
+            }
         }
 
         // Keep push registered: the connector is idempotent, so this self-heals after a
@@ -122,75 +131,126 @@ object Poller {
     }
 
     /**
-     * Uploads P2P envelopes we composed ourselves once the gateway is reachable again. Relayed
-     * envelopes from other peers stay in custody; only our own messages become normal pages.
+     * BLE gets the first chance; the gateway is the fallback. Our own envelopes may go out at
+     * once, custody envelopes only after [RELAY_GRACE_SECONDS] so a nearby owner can still take
+     * them. A successful upload stays in the P2P queue: only a delivery receipt/ACK removes it,
+     * which keeps the local transport working even after the server accepted a copy.
      */
     @Synchronized
     fun flushP2PQueue(context: Context) {
         val store = Store(context)
         val items = store.p2pQueue()
+        relayed.retainAll(items.mapTo(HashSet()) { it.id })
         if (items.isEmpty()) return
         val mySenderIds = store.contacts().map { it.mySenderId }.filter { it.isNotBlank() }.toSet()
-        if (mySenderIds.isEmpty()) return
+        val ownRoute = store.ownRouteHash()
         val deliveredMids = store.history().filter { it.remoteDelivered }.mapNotNull { it.mid }.toSet()
+        val now = System.currentTimeMillis() / 1000L
         items.forEach { envelope ->
             // Already confirmed on the peer's phone over P2P: no gateway copy needed.
             if (envelope.id in deliveredMids) {
                 store.removeP2P(envelope.id)
+                relayed.remove(envelope.id)
                 return@forEach
             }
+            if (envelope.id in relayed) return@forEach
             val payload = runCatching { org.json.JSONObject(envelope.payload) }.getOrNull()
                 ?: return@forEach
+            val composedHere = (ownRoute.isNotBlank() && envelope.from == ownRoute) ||
+                payload.optString("from") in mySenderIds
+            // A relay only uploads custody after BLE had a chance to deliver it locally.
+            if (!composedHere && now - envelope.createdAt < RELAY_GRACE_SECONDS) return@forEach
+            // The envelope names the server that owns the destination mailbox. Without it an
+            // upload to the relay's own server would strand cross-server messages.
+            val uploadServer = relayServer(envelope.server, store) ?: return@forEach
+            // The mesh advertises how many 302 hops it accepts; older standalone servers omit it.
+            val settings = ServerSettingsCache.get(uploadServer)
             // v2: the destination UUID is encrypted to the owning server, so a relay can upload
-            // an envelope it does not own. No bearer is sent; the server decrypts and routes.
-            val encryptedDestination = envelope.mailboxEncrypted
-            if (!encryptedDestination.isNullOrBlank() && store.p2pGpgEnabled()) {
+            // without a bearer. If the sender could not fetch the destination server's key (it
+            // may be BLE-only), the relay does it here with that server's public key and key_id.
+            var encryptedDestination = envelope.mailboxEncrypted
+            var keyId = envelope.keyId
+            var destination = payload.optString("destination").takeIf { it.isNotBlank() }
+            if (encryptedDestination.isNullOrBlank() && destination != null) {
+                if (settings == null) return@forEach
+                if (settings.p2pGpgEnabled) {
+                    val publicKey = settings.p2pPublicKey
+                    if (publicKey.isBlank()) return@forEach
+                    val cipher = runCatching { Pgp.encrypt(destination!!, publicKey) }.getOrNull()
+                        ?: return@forEach
+                    encryptedDestination = cipher
+                    keyId = settings.p2pKeyId
+                    payload.put("mailbox_encrypted", cipher)
+                    payload.put("key_id", settings.p2pKeyId)
+                    payload.remove("destination")
+                    destination = null
+                }
+            }
+            if (!encryptedDestination.isNullOrBlank()) {
                 payload.put("p2p", true)
                 payload.put("p2p_id", envelope.id)
                 payload.put("p2p_expires_at", envelope.expiresAt)
                 payload.put("mailbox_encrypted", encryptedDestination)
-                envelope.keyId?.takeIf { it.isNotBlank() }?.let { payload.put("key_id", it) }
+                keyId?.takeIf { it.isNotBlank() }?.let { payload.put("key_id", it) }
                 payload.remove("destination")
                 val outcome = PagerClient.notifyJsonOutcome(
-                    store.serverUrl,
+                    uploadServer,
                     null,
                     payload.toString(),
+                    maxRedirects = settings?.meshMaxHops ?: 3,
                 )
                 when (outcome.kind) {
                     NotifyKind.OK,
                     NotifyKind.DUPLICATE -> {
-                        store.markP2PDelivered(envelope.id)
-                        Log.i(TAG, "P2P envelope delivered via GPG gateway: ${envelope.id}")
+                        relayed += envelope.id
+                        Log.i(TAG, "P2P envelope uploaded via GPG gateway: ${envelope.id}")
                     }
                     NotifyKind.EXPIRED,
                     NotifyKind.CONFLICT -> {
                         store.removeP2P(envelope.id)
+                        relayed.remove(envelope.id)
                         Log.w(TAG, "P2P envelope dropped (${outcome.kind}): ${envelope.id}")
                     }
                     else -> {}
                 }
                 return@forEach
             }
-            // Old-format envelopes only carry the plain destination; upload any of them, not
-            // just the ones we composed. A relay that reaches the internet can deliver them too.
-            val destination = payload.optString("destination").takeIf { it.isNotBlank() }
-                ?: return@forEach
-            val outcome = PagerClient.notifyJsonOutcome(store.serverUrl, destination, envelope.payload)
+            // A server without the GPG path accepts the plain destination as the bearer.
+            if (destination == null) return@forEach
+            payload.put("p2p", true)
+            payload.put("p2p_id", envelope.id)
+            payload.put("p2p_expires_at", envelope.expiresAt)
+            val outcome = PagerClient.notifyJsonOutcome(
+                uploadServer,
+                destination,
+                payload.toString(),
+                maxRedirects = settings?.meshMaxHops ?: 3,
+            )
             when (outcome.kind) {
                 NotifyKind.OK,
                 NotifyKind.DUPLICATE -> {
-                    store.markP2PDelivered(envelope.id)
-                    Log.i(TAG, "P2P envelope delivered via gateway: ${envelope.id}")
+                    relayed += envelope.id
+                    Log.i(TAG, "P2P envelope uploaded via gateway: ${envelope.id}")
                 }
                 NotifyKind.EXPIRED,
                 NotifyKind.CONFLICT -> {
                     store.removeP2P(envelope.id)
+                    relayed.remove(envelope.id)
                     Log.w(TAG, "P2P envelope dropped (${outcome.kind}): ${envelope.id}")
                 }
                 // FULL/RETRY/DISABLED: keep it and try again on the next poll.
                 else -> {}
             }
         }
+    }
+
+    /** The destination server named by a relayed envelope, constrained to an HTTP(S) URL. */
+    private fun relayServer(server: String?, store: Store): String? {
+        val raw = server?.trim()?.trimEnd('/')?.takeIf { it.isNotBlank() } ?: return store.serverUrl
+        val uri = runCatching { java.net.URI(raw) }.getOrNull() ?: return null
+        if (uri.scheme != "http" && uri.scheme != "https") return null
+        if (uri.host.isNullOrBlank()) return null
+        return raw
     }
 
     /** Retries messages that were queued while the gateway was unreachable. */
@@ -430,6 +490,9 @@ object Poller {
                         buildDeliveryReceipt(contact, messageMid, store.displayName),
                     )
                 }.onFailure { Log.w(TAG, "delivery receipt failed for ${page.id}: ${it.message}") }
+                // A relayed page may come from a sender that only has BLE; carry the receipt
+                // back over the same nearby transport too.
+                if (page.p2p) P2PReceiver.enqueueDeliveryReceipt(context, contact, messageMid)
             }
 
             // On a shared channel, learn who is on the other end from their first message.

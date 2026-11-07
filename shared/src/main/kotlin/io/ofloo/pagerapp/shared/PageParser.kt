@@ -76,6 +76,9 @@ object PageParser {
             read = json["read"] as? String,
             deliveredMid = (json["delivered"] as? String)?.takeIf { it.isNotBlank() },
             createdAt = (json["created_at"] as? Number)?.toDouble() ?: 0.0,
+            sentAt = (json["sent_at"] as? Number)?.toDouble() ?: 0.0,
+            p2p = json["p2p"] as? Boolean ?: false,
+            p2pId = (json["p2p_id"] as? String)?.takeIf { it.isNotBlank() },
         )
     }
 

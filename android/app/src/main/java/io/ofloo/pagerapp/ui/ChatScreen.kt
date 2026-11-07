@@ -39,7 +39,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -113,6 +115,7 @@ import io.ofloo.pagerapp.data.HistoryEntry
 import io.ofloo.pagerapp.data.QueuedSend
 import io.ofloo.pagerapp.data.Store
 import io.ofloo.pagerapp.net.PagerClient
+import io.ofloo.pagerapp.net.ServerSettingsCache
 import io.ofloo.pagerapp.notify.RepeatAlerts
 import io.ofloo.pagerapp.p2p.BleP2P
 import io.ofloo.pagerapp.p2p.P2PService
@@ -225,7 +228,7 @@ fun ChatScreen(
         inputInteraction.interactions.collect { interaction ->
             if (interaction is PressInteraction.Release && latestCount > 0) {
                 delay(300)
-                listState.animateScrollToItem(latestCount - 1)
+                listState.scrollToLatest(latestCount - 1)
             }
         }
     }
@@ -271,9 +274,22 @@ fun ChatScreen(
             }
         }
     }
-    // Stick to the newest message, like a messenger should.
-    LaunchedEffect(thread.size) {
-        if (thread.isNotEmpty()) listState.scrollToItem(thread.lastIndex)
+    // Stick to the newest message, like a messenger should. Key on the last id as well as the
+    // size so a replaced/merged bubble retriggers it, and scroll to the bubble's bottom (not its
+    // top) after layout, so long messages and the open keyboard cannot hide the newest line.
+    LaunchedEffect(thread.size, thread.lastOrNull()?.id) {
+        if (thread.isNotEmpty()) {
+            delay(50)
+            listState.scrollToLatest(thread.lastIndex)
+        }
+    }
+    // The queued/error banner takes height away from the list; scroll once more after layout so
+    // the newest bubble is not left clipped underneath it.
+    LaunchedEffect(failure) {
+        if (failure != null && thread.isNotEmpty()) {
+            delay(100)
+            listState.scrollToLatest(thread.lastIndex)
+        }
     }
 
     fun sendText(
@@ -290,6 +306,9 @@ fun ChatScreen(
             val mid = UUID.randomUUID().toString()
             val historyId = "out-${UUID.randomUUID()}"
             val replyingTo = replyEntry
+            // The sender's clock, carried with the payload so the receiving side orders by send
+            // time instead of by whichever transport (BLE or gateway) happened to arrive first.
+            val createdAt = System.currentTimeMillis() / 1000.0
             // Key generation, signing and encryption are CPU-heavy; never run them on the main
             // thread or the first send on a fresh install ANRs.
             val ownKeys = withContext(Dispatchers.IO) { store.ensureOwnKeys() }
@@ -307,6 +326,7 @@ fun ChatScreen(
                 // Explicit routing metadata: the peer-visible sender and destination mailbox.
                 put("source", liveContact.mySenderId)
                 put("destination", liveContact.outbox)
+                put("sent_at", createdAt)
                 if (replyingTo != null) {
                     put("reply_to", replyingTo.mid ?: replyingTo.id)
                     put("reply_preview", replyPreviewOf(replyingTo))
@@ -338,6 +358,7 @@ fun ChatScreen(
                                 "source" to liveContact.mySenderId,
                                 "destination" to store.uuid,
                                 "self_copy" to true,
+                                "sent_at" to createdAt,
                             )
                             if (replyingTo != null) {
                                 selfCopy["reply_to"] = replyingTo.mid ?: replyingTo.id
@@ -356,7 +377,6 @@ fun ChatScreen(
                     true
                 }
             }
-            val createdAt = System.currentTimeMillis() / 1000.0
             val optimistic = HistoryEntry(
                 id = historyId,
                 status = STATUS_MESSAGE,
@@ -392,8 +412,22 @@ fun ChatScreen(
             if (result.isFailure) {
                 if (store.p2pModeEnabled) {
                     val maxAge = store.p2pMaxAgeSeconds.takeIf { it > 0L } ?: 604800L
-                    val gpgKey = store.p2pPublicKey().takeIf { store.p2pGpgEnabled() }
-                    val encryptedDestination = gpgKey?.let { key ->
+                    // The destination may be on another PagerMCP server; encrypt the mailbox UUID
+                    // to that server's key, not to ours, or the relay can never route it.
+                    val destinationKey = withContext(Dispatchers.IO) {
+                        if (liveContact.serverUrl.trimEnd('/') == store.serverUrl.trimEnd('/')) {
+                            if (store.p2pGpgEnabled() && store.p2pPublicKey().isNotBlank()) {
+                                store.p2pPublicKey() to store.p2pKeyId()
+                            } else {
+                                null
+                            }
+                        } else {
+                            ServerSettingsCache.get(liveContact.serverUrl)
+                                ?.takeIf { it.p2pGpgEnabled && it.p2pPublicKey.isNotBlank() }
+                                ?.let { it.p2pPublicKey to it.p2pKeyId }
+                        }
+                    }
+                    val encryptedDestination = destinationKey?.first?.let { key ->
                         withContext(Dispatchers.IO) {
                             runCatching { Pgp.encrypt(liveContact.outbox, key) }.getOrNull()
                         }
@@ -411,7 +445,8 @@ fun ChatScreen(
                             expiresAt = createdAt.toLong() + maxAge,
                             payload = envelopePayload.toString(),
                             mailboxEncrypted = encryptedDestination,
-                            keyId = store.p2pKeyId().takeIf { encryptedDestination != null },
+                            keyId = destinationKey?.second?.takeIf { encryptedDestination != null },
+                            server = liveContact.serverUrl.trimEnd('/'),
                         ),
                     )
                     P2PService.start(context)
@@ -1481,6 +1516,13 @@ private fun replyPreviewOf(entry: HistoryEntry): String {
         !entry.message.isNullOrBlank() -> entry.message.take(160)
         else -> "Message"
     }
+}
+
+/** Put the last bubble's bottom at the bottom of the viewport, not merely its top. */
+private suspend fun LazyListState.scrollToLatest(index: Int) {
+    if (index < 0) return
+    scrollToItem(index)
+    scrollBy(1_000_000f)
 }
 
 private fun fullDateTime(epochSeconds: Double): String =

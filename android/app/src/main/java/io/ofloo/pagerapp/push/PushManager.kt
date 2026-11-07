@@ -5,6 +5,7 @@ import android.util.Log
 import io.ofloo.pagerapp.data.FcmLease
 import io.ofloo.pagerapp.data.Store
 import io.ofloo.pagerapp.net.PagerClient
+import io.ofloo.pagerapp.net.ServerSettingsCache
 import io.ofloo.pagerapp.net.SubscriptionNotFoundException
 import io.ofloo.pagerapp.poll.Poller
 import org.json.JSONArray
@@ -101,8 +102,7 @@ object PushManager {
         // The server decides whether a push subscription is identified by the mailbox UUID or by
         // an anonymised route hash; learn that before registering anything.
         targets.map { it.first }.distinct().forEach { server ->
-            runCatching { PagerClient.settings(server) }
-                .onSuccess { store.cachePushIdentity(it) }
+            ServerSettingsCache.get(server)?.let { store.cachePushIdentity(it) }
         }
         val prior = store.fcmLeases().toMutableList()
         val desired = targets.toSet()
@@ -139,8 +139,10 @@ object PushManager {
             // A rotating identity must be renewed when the bucket rolls over, even if the lease
             // itself is still valid; the server only accepts a few neighbouring buckets.
             val routeChanged = route != null && current?.route != route
+            // Renew inside the server's advertised warning window, not a client constant.
+            val leadDays = ServerSettingsCache.get(server)?.renewLeadDays ?: RENEW_LEAD_DAYS
             val validLease = current != null && active.any { it.subscriptionId == current.subscriptionId } &&
-                current.expiresAt > System.currentTimeMillis() / 1000L + 5 * 86_400L &&
+                current.expiresAt > System.currentTimeMillis() / 1000L + leadDays * 86_400L &&
                 !routeChanged
             if (current != null && unchangedToken && validLease && !force) {
                 successfulTargets += server to mailbox
@@ -310,22 +312,30 @@ object PushManager {
             store.pushId = ""   // the server no longer knows it; register from scratch below
         }
         val topic = topicOf(endpoint)
-        val settings = runCatching { PagerClient.settings(server) }.getOrNull()
+        val settings = ServerSettingsCache.get(server)
         // When the server runs its own ntfy for wake-ups and the distributor is that same server,
         // registering just the topic is enough — and the server then never posts to a URL a client
         // handed it. Otherwise fall back to the full endpoint, which is what older servers expect.
         val useNtfy = topic != null && settings != null && settings.supportsNtfy &&
             sameHost(settings.ntfyUrl, endpoint)
+        // The server advertises which endpoint channels it accepts; use one of those names.
+        val channel = when {
+            useNtfy -> NTFY_CHANNEL
+            settings == null -> CHANNEL
+            CHANNEL in settings.channels -> CHANNEL
+            "http" in settings.channels -> "http"
+            else -> CHANNEL
+        }
         return runCatching {
             val reply = if (useNtfy) {
                 PagerClient.subscribe(server, mailbox, NTFY_CHANNEL, topic = topic)
             } else {
-                PagerClient.subscribe(server, mailbox, CHANNEL, endpoint = endpoint)
+                PagerClient.subscribe(server, mailbox, channel, endpoint = endpoint)
             }
             store.pushId = reply.optString("id")
             store.pushExpires = (reply.opt("expires") as? Number)?.toLong() ?: 0L
             store.pushEndpoint = endpoint
-            store.pushChannel = if (useNtfy) NTFY_CHANNEL else CHANNEL
+            store.pushChannel = channel
             store.pushEnabled = true
             Log.i(TAG, "push registered on ${store.pushChannel}, expires in ${store.pushDaysLeft()} days")
             true
@@ -347,7 +357,8 @@ object PushManager {
             val endpoint = store.pushEndpoint
             return endpoint.isNotBlank() && subscribe(context, endpoint, store.serverUrl)
         }
-        if (!force && store.pushDaysLeft() > RENEW_LEAD_DAYS) return false
+        val leadDays = ServerSettingsCache.cached(store.serverUrl)?.renewLeadDays ?: RENEW_LEAD_DAYS
+        if (!force && store.pushDaysLeft() > leadDays) return false
 
         val mailbox = store.uuid ?: return false
         return runCatching {

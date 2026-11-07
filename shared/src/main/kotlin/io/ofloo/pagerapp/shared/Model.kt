@@ -120,6 +120,11 @@ data class Page(
     val deliveredMid: String? = null,
     /** Server `created_at` in Unix seconds; 0 when absent. Used only for ordering. */
     val createdAt: Double = 0.0,
+    /**
+     * The sender's client-side send time in Unix seconds, when the payload carried it. Unlike
+     * [createdAt] this survives the order in which the gateway or BLE happened to deliver a copy.
+     */
+    val sentAt: Double = 0.0,
     /** PagerMCP read-copy state from a webclient-mode mailbox. */
     val acked: Boolean? = null,
     /** A copy of a message this user sent from another client; store it as own history, no alert. */
@@ -131,6 +136,10 @@ data class Page(
     val replyPreview: String? = null,
     val replyFrom: String? = null,
     val replyFromName: String? = null,
+    /** True when the payload reached this mailbox through a P2P relay (gateway fallback). */
+    val p2p: Boolean = false,
+    /** The relayed envelope id, when [p2p] is true. */
+    val p2pId: String? = null,
 ) {
     /** Native ACK: available only when the page carries an [ackUuid]. */
     val ackAvailable: Boolean get() = !ackUuid.isNullOrBlank()

@@ -626,11 +626,16 @@ class Store(context: Context) {
 
     /**
      * Wake-yourself-up polling: an alarm every [pollSeconds], no notification, nothing from Google.
-     * Mutually exclusive with [reliableDelivery] — turning one on turns the other off.
+     * Enabling alarm polling also disables [reliableDelivery].
      */
     var alarmPolling: Boolean
         get() = prefs.getBoolean(KEY_ALARM, false)
-        set(v) = prefs.edit().putBoolean(KEY_ALARM, v).apply()
+        set(v) {
+            prefs.edit().putBoolean(KEY_ALARM, v).apply()
+            if (v) {
+                prefs.edit().putBoolean(KEY_RELIABLE, false).apply()
+            }
+        }
 
     var config: PagerConfig
         get() = ConfigCodec.decode(prefs.getString(KEY_CONFIG, null))
@@ -734,6 +739,7 @@ class Store(context: Context) {
     }
 
     /** P2P envelopes waiting for a peer, a gateway, or expiry. */
+    @Synchronized
     fun p2pQueue(): List<P2PEnvelope> {
         val raw = prefs.getString(KEY_P2P_QUEUE, null) ?: return emptyList()
         return try {
@@ -746,6 +752,7 @@ class Store(context: Context) {
         }
     }
 
+    @Synchronized
     fun enqueueP2P(envelope: P2PEnvelope) {
         val items = (p2pQueue().filterNot { it.id == envelope.id } + envelope)
             .sortedBy { it.createdAt }
@@ -755,6 +762,7 @@ class Store(context: Context) {
         prefs.edit().putString(KEY_P2P_QUEUE, arr.toString()).apply()
     }
 
+    @Synchronized
     fun removeP2P(id: String) {
         val items = p2pQueue().filterNot { it.id == id }
         val arr = JSONArray()
@@ -762,6 +770,7 @@ class Store(context: Context) {
         prefs.edit().putString(KEY_P2P_QUEUE, arr.toString()).apply()
     }
 
+    @Synchronized
     fun markP2PDelivered(id: String) {
         removeP2P(id)
         rewriteHistory {
@@ -774,6 +783,7 @@ class Store(context: Context) {
      * but it is no longer "waiting on this phone" — the clock clears and the bubble shows the
      * underway envelope until a delivery receipt arrives.
      */
+    @Synchronized
     fun markP2PCustody(id: String) {
         rewriteHistory {
             if (it.mid == id) it.copy(pending = false, delivered = false) else it
@@ -846,15 +856,25 @@ class Store(context: Context) {
     fun markReadByMid(mid: String) {
         if (mid.isBlank()) return
         rewriteHistory {
-            if (it.mid == mid && !it.acked) it.copy(acked = true) else it
+            if (it.mid == mid) {
+                it.copy(pending = false, remoteDelivered = true, acked = true, sendError = null)
+            } else {
+                it
+            }
         }
+        removeP2P(mid)
     }
 
     fun markDeliveredByMid(mid: String) {
         if (mid.isBlank()) return
         rewriteHistory {
-            if (it.mid == mid && !it.remoteDelivered) it.copy(remoteDelivered = true) else it
+            if (it.mid == mid) {
+                it.copy(pending = false, remoteDelivered = true, sendError = null)
+            } else {
+                it
+            }
         }
+        removeP2P(mid)
     }
 
     /** Attaches a locally downloaded/assembled photo to its history entry. */
@@ -1234,7 +1254,11 @@ data class HistoryEntry(
             replyFrom = page.replyFrom,
             replyFromName = page.replyFromName,
             sig = page.sig,
-            createdAt = if (page.createdAt > 0.0) page.createdAt else Instant.now().epochSecond.toDouble(),
+            createdAt = when {
+                page.sentAt > 0.0 -> page.sentAt
+                page.createdAt > 0.0 -> page.createdAt
+                else -> Instant.now().epochSecond.toDouble()
+            },
             ackUuid = page.ackUuid,
             replyUuid = page.replyUuid,
             ackToken = page.ackToken,

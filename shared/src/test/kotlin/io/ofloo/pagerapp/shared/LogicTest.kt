@@ -248,6 +248,20 @@ class PageParserTest {
     }
 
     @Test
+    fun keepsTheSendersTimestampApartFromTheServerCreationTime() {
+        val page = PageParser.parse(
+            mapOf(
+                "id" to "m1",
+                "status" to 10,
+                "created_at" to 1_793_970_500,
+                "sent_at" to 1_793_970_000,
+            ),
+        )
+        assertEquals(1_793_970_500.0, page.createdAt, 0.001)
+        assertEquals(1_793_970_000.0, page.sentAt, 0.001)
+    }
+
+    @Test
     fun acceptsCommonMailGatewayAliases() {
         val page = PageParser.parse(
             mapOf(

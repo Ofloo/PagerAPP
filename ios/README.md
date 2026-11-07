@@ -19,10 +19,15 @@ core**; chat, photos, sharing and push wake-ups are deliberately not in it yet.
 
 ## Not yet on iOS
 
-- Two-way chat/read receipts, photo/attachment share links, camera and Android share target.
+- Two-way chat, quote replies/read receipts, photo/attachment share links, camera and an iOS
+  Share Extension (the Android share target equivalent).
+- Webclient mode/self-copy sync, encrypted backup and mailbox/contact QR scanning.
 - Push wake-ups (APNs/FCM); iOS background refresh is opportunistic, so delivery is not as fast
   as Android's foreground service.
-- QR scanning of a mailbox/contact link.
+
+The parity plan for Android 0.1.184 (chat, PGP, backup, webclient, push and P2P) is in
+[`DRAFT.md`](DRAFT.md). It is an implementation draft; App Store Connect publication needs a
+macOS runner and credentials.
 
 ## Build / test (macOS only)
 

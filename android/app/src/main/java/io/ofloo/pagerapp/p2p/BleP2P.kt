@@ -41,15 +41,54 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.util.UUID
+import java.util.concurrent.Executors
 import java.util.concurrent.ConcurrentLinkedQueue
 
-/**
- * Minimal BLE GATT queue transport. It implements the transport part of docs/p2p-protocol.md:
- * CBOR is not used yet; JSON frames are used while the BLE link itself is being validated.
- */
+/** One PagerAPP peer currently visible over BLE, with the signal of its latest advertisement. */
+data class NearbyPeer(
+    val id: String,
+    /** Null when the peer is connected but its advertisement has not been seen recently. */
+    val rssi: Int?,
+    val connected: Boolean,
+)
+
+/** Point-in-time view of the BLE neighbourhood, safe to read from the service thread. */
+data class NearbySnapshot(
+    val peers: List<NearbyPeer>,
+    val connected: Boolean,
+) {
+    val count: Int get() = peers.size
+    val bestRssi: Int? get() = peers.firstNotNullOfOrNull { it.rssi }
+}
+
+enum class P2PDirection { SENDING, RECEIVING }
+
+/** Transfer progress for the notification: chunks completed out of the transfer total. */
+data class P2PTransferProgress(val done: Int, val total: Int) {
+    init {
+        require(total > 0)
+    }
+}
+
+/** What the BLE transport is doing right now, for the foreground notification. */
+data class P2PActivity(
+    val peers: Int,
+    val bestRssi: Int?,
+    val connected: Boolean,
+    val connecting: Boolean,
+    val syncing: Boolean,
+    val outbound: P2PTransferProgress?,
+    val inbound: P2PTransferProgress?,
+    val queued: Int,
+    val lastCompleted: P2PTransferProgress?,
+    val lastDirection: P2PDirection?,
+)
+
+@SuppressLint("MissingPermission")
 object BleP2P {
 
     private const val TAG = "PagerAPP"
+    private const val CENTRAL_TARGET = "@central"
     private val SERVICE_UUID: UUID = UUID.fromString("0000f00d-0000-1000-8000-00805f9b34fb")
     private val RX_UUID: UUID = UUID.fromString("7a2f3c10-6b3b-4c0a-9e5c-3c8d6a1f2b71")
     private val TX_UUID: UUID = UUID.fromString("7a2f3c10-6b3b-4c0a-9e5c-3c8d6a1f2b72")
@@ -62,56 +101,85 @@ object BleP2P {
     private var advertiser: android.bluetooth.le.BluetoothLeAdvertiser? = null
     private var scanner: android.bluetooth.le.BluetoothLeScanner? = null
     private var clientGatt: BluetoothGatt? = null
-    private var serverDevice: BluetoothDevice? = null
-    private var rx: BluetoothGattCharacteristic? = null
-    private var tx: BluetoothGattCharacteristic? = null
-    private var notifyReady = false
-    private var centralConnected = false
-    private var connecting = false
-    private var localId: String = ""
-    private var mtu = 23
-    /** One frame, and which link it belongs to (null = the link we opened as central). */
-    private class OutgoingPacket(val bytes: ByteArray, val device: BluetoothDevice?)
-    private val outgoing = ConcurrentLinkedQueue<OutgoingPacket>()
-    private var sending = false
-    // Every link has its own reassembly buffer. A peer's frames must never be parsed with another
-    // peer's offset; that used to make replies go to the wrong phone.
+    private var clientRx: BluetoothGattCharacteristic? = null
+    private var clientTx: BluetoothGattCharacteristic? = null
+    private var serverTx: BluetoothGattCharacteristic? = null
+    @Volatile private var centralConnected = false
+    private var centralReady = false
+    @Volatile private var connecting = false
+    private var localId = ""
+    private var centralMtu = 23
+    private val deviceMtu = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    private class OutgoingPacket(
+        val bytes: ByteArray,
+        val device: BluetoothDevice?,
+        val link: String,
+        val envelopeId: String? = null,
+        val chunkSeq: Int? = null,
+        val chunkTotal: Int? = null,
+        val lastChunkFragment: Boolean = false,
+    )
+    private val queuedByLink = java.util.concurrent.ConcurrentHashMap<String, ConcurrentLinkedQueue<OutgoingPacket>>()
+    private val sending = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val inFlightByLink = java.util.concurrent.ConcurrentHashMap<String, OutgoingPacket>()
+    private val assemblingBytes = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
+    private val linkGenerations = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
+    private val linkTimeouts = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
+    private val linkWriteErrors = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
     private val clientFrames = FrameReader { raw -> onJson(raw, null) }
     private val serverReaders = java.util.concurrent.ConcurrentHashMap<String, FrameReader>()
-    /** Devices that enabled notifications on our GATT server. */
+    private val connectedDevices = java.util.concurrent.ConcurrentHashMap<String, BluetoothDevice>()
     private val notifyDevices = java.util.Collections.newSetFromMap(
         java.util.concurrent.ConcurrentHashMap<String, Boolean>(),
     )
-    private val assemblers = mutableMapOf<String, P2PAssembler>()
-    private val transferEnvelopes = mutableMapOf<String, String>()
-    private val transferDevices = mutableMapOf<String, BluetoothDevice?>()
+    private val notifyReadyDevices = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<String, Boolean>(),
+    )
+    private val assemblers = java.util.concurrent.ConcurrentHashMap<String, P2PAssembler>()
+    private val transferEnvelopes = java.util.concurrent.ConcurrentHashMap<String, String>()
+    // A transfer belongs either to a peripheral's address or to the central link (CENTRAL_TARGET).
+    // ConcurrentHashMap cannot store a null BluetoothDevice for the central link.
+    private val transferSources = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val main = Handler(Looper.getMainLooper())
+    private val bleExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "pagerapp-ble-state").apply { isDaemon = true }
+    }
     private var started = false
+    private var generation = 0L
     private var wakeLock: PowerManager.WakeLock? = null
-    private var haveSent = false
+    private val haveSentDevices = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private var haveSentClient = false
     private var advertising = false
     private var scanning = false
     private class PeerSeen(val device: BluetoothDevice, val rssi: Int, val seenAt: Long)
     private val peers = java.util.concurrent.ConcurrentHashMap<String, PeerSeen>()
-    /** The peer we last linked to; skipped for a while so a second phone gets a turn. */
-    private var linkedPeer: String = ""
-    private var linkedPeerUntil = 0L
-    /** When the current link last carried a frame; a silent link is recycled. */
-    @Volatile private var lastLinkActivity = 0L
+    private val recentlyVisited = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    @Volatile private var linkedPeer = ""
+    private var lastLinkActivity = 0L
+    private val linkActivity = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private var discoverAttempts = 0
-    private var consecutiveSendTimeouts = 0
-    private var consecutiveWriteErrors = 0
-    // Envelopes are sent one at a time: firing several 70-chunk transfers at once saturates the
-    // link and can stall the peer's own transfer in the other direction.
     private val sendLock = Any()
     private val sendQueue = ArrayDeque<P2PEnvelope>()
-    private var sendingEnvelope: String? = null
+    @Volatile private var sendingEnvelope: String? = null
     private var sendingSince = 0L
-    private val sendAttempts = HashMap<String, Int>()
+    @Volatile private var outboundTotal = 0
+    @Volatile private var outboundDone = 0
+    @Volatile private var lastWantAt = 0L
+    @Volatile private var lastCompletedAt = 0L
+    @Volatile private var lastCompletedDone = 0
+    @Volatile private var lastCompletedTotal = 0
+    @Volatile private var lastCompletedDirection: P2PDirection? = null
+    private val sendAttempts = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    private val sendTargets = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val envelopeTargets = java.util.concurrent.ConcurrentHashMap<String, MutableSet<String>>()
+    @Volatile private var sendingTarget: String? = null
 
     @Synchronized
     fun start(ctx: Context) {
-        if (started) return
+        if (started) {
+            if (store?.alarmPolling == true) stopAfter(60_000L)
+            return
+        }
         if (!hasPermissions(ctx)) {
             Log.w(TAG, "BLE P2P permissions missing")
             return
@@ -128,9 +196,8 @@ object BleP2P {
             return
         }
         started = true
-        // With the screen off the CPU suspends and the GATT handshake never finishes. Nearby sync
-        // is opt-in, so keeping the CPU awake while it is enabled is a fair trade. This lives here
-        // (not in a service) so it covers both hosts: PollService and P2PService.
+        generation++
+        if (store!!.alarmPolling) stopAfter(60_000L)
         wakeLock = (ctx.getSystemService(Context.POWER_SERVICE) as? PowerManager)
             ?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "PagerAPP:p2p")
             ?.apply {
@@ -147,6 +214,14 @@ object BleP2P {
         Log.i(TAG, "BLE P2P started as $localId")
     }
 
+    fun stopAfter(delayMillis: Long) {
+        val appContext = context ?: return
+        val scheduledGeneration = synchronized(this) { generation }
+        main.postDelayed({
+            if (Store(appContext).alarmPolling && synchronized(this) { generation == scheduledGeneration }) stop()
+        }, delayMillis)
+    }
+
     @Synchronized
     fun stop() {
         started = false
@@ -160,17 +235,49 @@ object BleP2P {
         runCatching { server?.close() }
         clientGatt = null
         server = null
-        serverDevice = null
-        notifyReady = false
         centralConnected = false
+        centralReady = false
         connecting = false
-        rx = null
-        tx = null
-        haveSent = false
-        outgoing.clear()
-        sending = false
-        clientFrames.reset()
+        clientRx = null
+        clientTx = null
+        serverTx = null
+        connectedDevices.clear()
+        linkActivity.clear()
+        deviceMtu.clear()
+        notifyDevices.clear()
+
+        notifyReadyDevices.clear()
+        haveSentDevices.clear()
+        haveSentClient = false
+        synchronized(sendLock) {
+            queuedByLink.forEach { (link, queue) ->
+                synchronized(queue) {
+                    queue.clear()
+                    queuedByLink.remove(link, queue)
+                    linkGenerations.computeIfAbsent(link) { java.util.concurrent.atomic.AtomicLong() }.incrementAndGet()
+                    sending.remove(link)
+                    inFlightByLink.remove(link)
+                }
+            }
+            sending.clear()
+            inFlightByLink.clear()
+            linkTimeouts.clear()
+            linkWriteErrors.clear()
+            sendTargets.clear()
+            envelopeTargets.clear()
+            sendingEnvelope = null
+            sendingTarget = null
+            sendQueue.clear()
+            sendAttempts.clear()
+        }
+
+        assemblers.clear()
+        assemblingBytes.clear()
+        transferEnvelopes.clear()
+        transferSources.clear()
         serverReaders.values.forEach { it.reset() }
+        serverReaders.clear()
+        clientFrames.reset()
         Log.i(TAG, "BLE P2P stopped")
     }
 
@@ -187,25 +294,24 @@ object BleP2P {
         val manager = context?.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager ?: return
         server = manager.openGattServer(context, serverCallback)
         val service = BluetoothGattService(SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
-        rx = BluetoothGattCharacteristic(
+        val serverRx = BluetoothGattCharacteristic(
             RX_UUID,
-            BluetoothGattCharacteristic.PROPERTY_WRITE or
-                BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE,
+            BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE,
             BluetoothGattCharacteristic.PERMISSION_WRITE,
         )
-        tx = BluetoothGattCharacteristic(
+        serverTx = BluetoothGattCharacteristic(
             TX_UUID,
             BluetoothGattCharacteristic.PROPERTY_NOTIFY,
             BluetoothGattCharacteristic.PERMISSION_READ,
         )
-        tx!!.addDescriptor(
+        serverTx!!.addDescriptor(
             BluetoothGattDescriptor(
                 CCCD_UUID,
                 BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE,
             ),
         )
-        service.addCharacteristic(rx)
-        service.addCharacteristic(tx)
+        service.addCharacteristic(serverRx)
+        service.addCharacteristic(serverTx!!)
         server?.addService(service)
     }
 
@@ -227,12 +333,8 @@ object BleP2P {
 
     private fun startScan() {
         if (scanning) return
-        val filters = listOf(
-            ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build(),
-        )
-        val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-            .build()
+        val filters = listOf(ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build())
+        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
         runCatching { scanner?.startScan(filters, settings, scanCallback) }
             .onFailure { Log.w(TAG, "BLE scan failed: ${it.message}") }
     }
@@ -253,57 +355,28 @@ object BleP2P {
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult?) {
             scanning = true
-            val data = result?.scanRecord?.getServiceData(ParcelUuid(SERVICE_UUID))
-            if (data == null) {
-                Log.d(TAG, "BLE scan without PagerAPP service data: ${result?.device?.address}")
-                return
-            }
+            val data = result?.scanRecord?.getServiceData(ParcelUuid(SERVICE_UUID)) ?: return
             val remote = String(data, Charsets.UTF_8)
-            Log.d(TAG, "BLE scan found peer $remote")
             if (remote.length < 8 || remote == localId) return
-            val device = result.device
-            if (device == null) {
-                Log.w(TAG, "BLE scan result without a device (background scan anonymised?)")
-                return
-            }
-            peers[remote] = PeerSeen(device, result.rssi, System.currentTimeMillis())
-
-            // A link that stopped carrying frames while we still have data to send is dead even
-            // if the stack never delivered a disconnect callback.
+            val device = result.device ?: return
             val now = System.currentTimeMillis()
+            peers[remote] = PeerSeen(device, result.rssi, now)
             val silent = now - lastLinkActivity
-            val otherVisible = peers.any { (id, seen) ->
-                id != linkedPeer && now - seen.seenAt < 5_000L
-            }
-            // With several phones around, poll them in turn: a short idle ends this link and
-            // the next scan result opens the next one. This reaches every peer within seconds
-            // instead of waiting a minute for a rotation.
-            val idleLimit = if (otherVisible) 8_000L else 60_000L
-            if (centralConnected &&
-                ((outgoing.isNotEmpty() && silent > 20_000L) || silent > idleLimit)
-            ) {
+            if (centralConnected && silent > if (hasOtherVisiblePeer(now)) 8_000L else 60_000L) {
                 recycleClient()
             }
-            if (centralConnected || connecting || serverDevice != null) return
-            // Only the lower id opens a link. Among several nearby phones, prefer the strongest
-            // signal; after a while give another visible phone a turn so a mesh with more than
-            // two phones still syncs with all of them.
+            if (centralConnected || connecting) return
             val candidates = peers.entries
                 .filter { now - it.value.seenAt < 5_000L && localId < it.key }
             if (candidates.isEmpty()) return
-            val fresh = candidates.filter { it.key != linkedPeer || now > linkedPeerUntil }
-            val best = (if (fresh.isNotEmpty()) fresh else candidates).maxByOrNull { it.value.rssi }
-                ?: return
+            val fresh = candidates.filter { (recentlyVisited[it.key] ?: 0L) <= now }
+            val best = (fresh.ifEmpty { candidates }).maxByOrNull { it.value.rssi } ?: return
             linkedPeer = best.key
-            linkedPeerUntil = now + 8_000L
-            runCatching { clientGatt?.close() }
-            clientGatt = null
+            recentlyVisited[best.key] = now + if (candidates.size > 1) 8_000L else 60_000L
             connecting = true
             Log.i(TAG, "BLE connecting to ${best.key} rssi=${best.value.rssi}")
             runCatching {
-                clientGatt = best.value.device.connectGatt(
-                    context, false, clientCallback, BluetoothDevice.TRANSPORT_LE,
-                )
+                clientGatt = best.value.device.connectGatt(context, false, clientCallback, BluetoothDevice.TRANSPORT_LE)
             }.onFailure {
                 connecting = false
                 Log.w(TAG, "BLE connect failed: ${it.message}")
@@ -314,7 +387,7 @@ object BleP2P {
                     runCatching { clientGatt?.close() }
                     clientGatt = null
                     connecting = false
-                    scheduleRestart()
+                    recentlyVisited[best.key] = System.currentTimeMillis() + 5_000L
                 }
             }, 10_000L)
         }
@@ -326,39 +399,60 @@ object BleP2P {
         }
     }
 
+    private fun hasOtherVisiblePeer(now: Long): Boolean = peers.any { (id, seen) ->
+        id != linkedPeer && now - seen.seenAt < 5_000L
+    }
+
     private val serverCallback = object : BluetoothGattServerCallback() {
         override fun onConnectionStateChange(device: BluetoothDevice?, status: Int, newState: Int) {
             if (newState == android.bluetooth.BluetoothProfile.STATE_CONNECTED) {
-                // The same peer must not hold two links (one in each direction); that produced two
-                // streams to the same phone and made the stack drop the connection.
-                if (device != null && clientGatt?.device?.address == device.address) {
-                    Log.i(TAG, "BLE duplicate link ignored")
-                    return
-                }
+                if (device != null && clientGatt?.device?.address == device.address) return
                 if (device != null) {
-                    serverDevice = device
-                    serverReaders[device.address]?.reset()
-                    sending = false
-                    Log.i(TAG, "BLE peer connected (peripheral)")
+                    connectedDevices[device.address] = device
+                    linkActivity[device.address] = System.currentTimeMillis()
+                    serverReaders.computeIfAbsent(device.address) { FrameReader { raw -> onJson(raw, device) } }.reset()
+                    Log.i(TAG, "BLE peer connected (peripheral ${device.address.takeLast(5)})")
                 }
-                lastLinkActivity = System.currentTimeMillis()
-            } else if (newState == android.bluetooth.BluetoothProfile.STATE_DISCONNECTED) {
-                if (device != null) {
-                    serverReaders.remove(device.address)?.reset()
-                    notifyDevices.remove(device.address)
-                    if (serverDevice == device) {
-                        serverDevice = null
-                        notifyReady = false
+            } else if (newState == android.bluetooth.BluetoothProfile.STATE_DISCONNECTED && device != null) {
+                connectedDevices.remove(device.address)
+                linkActivity.remove(device.address)
+                deviceMtu.remove(device.address)
+                serverReaders.remove(device.address)?.reset()
+                notifyDevices.remove(device.address)
+                notifyReadyDevices.remove(device.address)
+                haveSentDevices.remove(device.address)
+                val queue = queuedByLink[device.address]
+                if (queue != null) synchronized(queue) {
+                    queue.clear()
+                    queuedByLink.remove(device.address, queue)
+                }
+                linkGenerations.computeIfAbsent(device.address) { java.util.concurrent.atomic.AtomicLong() }.incrementAndGet()
+                sending.remove(device.address)
+                inFlightByLink.remove(device.address)
+                synchronized(sendLock) {
+                    envelopeTargets.values.forEach { it.remove(device.address) }
+                    envelopeTargets.entries.removeIf { it.value.isEmpty() }
+                    sendAttempts.keys.removeIf { envelopeTargets[it].isNullOrEmpty() }
+                    sendTargets.entries.removeIf { it.value == device.address }
+                    if (sendingTarget == device.address) {
+                        val id = sendingEnvelope
+                        sendingEnvelope = null
+                        sendingTarget = null
+                        id?.let { envelope ->
+                            if (!envelopeTargets[envelope].isNullOrEmpty()) {
+                                store?.p2pQueue()?.firstOrNull { it.id == envelope }?.let(sendQueue::addLast)
+                            }
+                        }
                     }
-                    haveSent = false
-                    scheduleRestart()
                 }
+                queuedByLink.keys.toList().forEach(::pump)
+                main.post { pump(); sendNextEnvelope() }
+                scheduleRestart()
             }
         }
 
         override fun onMtuChanged(device: BluetoothDevice?, mtu: Int) {
-            this@BleP2P.mtu = mtu.coerceAtLeast(23)
-            Log.i(TAG, "BLE server MTU ${this@BleP2P.mtu}")
+            if (device != null) deviceMtu[device.address] = mtu.coerceAtLeast(23)
         }
 
         override fun onDescriptorWriteRequest(
@@ -371,15 +465,21 @@ object BleP2P {
             value: ByteArray?,
         ) {
             if (descriptor?.uuid == CCCD_UUID) {
-                notifyReady = true
-                if (device != null) notifyDevices.add(device.address)
-                server?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
-                // A fresh link must never inherit a stuck "sending" flag or frames from the
-                // previous connection; otherwise the peer never announces its queue.
-                sending = false
-                outgoing.clear()
-                sendJson(JSONObject().put("t", "hello"), device)
-                sendHaveTo(device)
+                device?.let {
+                    notifyDevices.add(it.address)
+                    if (value?.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) == true) {
+                        notifyReadyDevices.add(it.address)
+                    } else {
+                        notifyReadyDevices.remove(it.address)
+                    }
+                }
+                if (responseNeeded) server?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
+                val enabled = device?.address?.let(notifyReadyDevices::contains) == true
+                device?.address?.let { haveSentDevices.remove(it) }
+                if (enabled) {
+                    sendJson(JSONObject().put("t", "hello"), device)
+                    sendHaveTo(device)
+                }
             } else if (responseNeeded) {
                 server?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
             }
@@ -394,24 +494,17 @@ object BleP2P {
             offset: Int,
             value: ByteArray?,
         ) {
-            if (responseNeeded) {
-                server?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
-            }
-            if (device != null) {
-                value?.let { bytes ->
-                    serverReaders.computeIfAbsent(device.address) {
-                        FrameReader { raw -> onJson(raw, device) }
-                    }.feed(bytes)
+            if (responseNeeded) server?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
+            if (device != null) value?.let { bytes ->
+                bleExecutor.execute {
+                    val reader = serverReaders.computeIfAbsent(device.address) { FrameReader { raw -> onJson(raw, device) } }
+                    reader.feed(bytes)
                 }
             }
         }
 
         override fun onNotificationSent(device: BluetoothDevice?, status: Int) {
-            lastLinkActivity = System.currentTimeMillis()
-            consecutiveSendTimeouts = 0
-            outgoing.poll()
-            sending = false
-            pump()
+            completeSend(device, status == BluetoothGatt.GATT_SUCCESS)
         }
     }
 
@@ -422,50 +515,72 @@ object BleP2P {
                 centralConnected = true
                 connecting = false
                 lastLinkActivity = System.currentTimeMillis()
-                rx = null
-                tx = null
+                clientRx = null
+                clientTx = null
+                centralMtu = 23
                 discoverAttempts = 0
-                // A previous link that died without a callback leaves "sending" stuck and old
-                // fragments queued. This is a fresh link; start clean.
-                sending = false
-                outgoing.clear()
-                resetIncoming()
+                clientFrames.reset()
                 gatt.discoverServices()
-                // A half-open link reports "connected" but never resolves services. Retry
-                // instead of waiting for the 45 s idle recycle.
                 main.postDelayed({
-                    if (centralConnected && (rx == null || tx == null)) {
-                        Log.w(TAG, "BLE service discovery timed out")
-                        recycleClient()
-                    }
+                    if (clientGatt === gatt && centralConnected && (clientRx == null || clientTx == null)) recycleClient()
                 }, 6_000L)
             } else if (newState == android.bluetooth.BluetoothProfile.STATE_DISCONNECTED) {
+                if (clientGatt !== gatt) return
                 centralConnected = false
+                centralReady = false
                 connecting = false
                 runCatching { gatt.close() }
                 clientGatt = null
-                notifyReady = false
-                haveSent = false
-                resetIncoming()
-                outgoing.clear()
-                sending = false
+                clientRx = null
+                clientTx = null
+                haveSentClient = false
+                clientFrames.reset()
+                val queue = queuedByLink[CENTRAL_TARGET]
+                if (queue != null) synchronized(queue) {
+                    queue.clear()
+                    queuedByLink.remove(CENTRAL_TARGET, queue)
+                    linkGenerations.computeIfAbsent(CENTRAL_TARGET) { java.util.concurrent.atomic.AtomicLong() }.incrementAndGet()
+                    sending.remove(CENTRAL_TARGET)
+                    inFlightByLink.remove(CENTRAL_TARGET)
+                } else {
+                    linkGenerations.computeIfAbsent(CENTRAL_TARGET) { java.util.concurrent.atomic.AtomicLong() }.incrementAndGet()
+                    sending.remove(CENTRAL_TARGET)
+                    inFlightByLink.remove(CENTRAL_TARGET)
+                }
+                synchronized(sendLock) {
+                    envelopeTargets.values.forEach { it.remove(CENTRAL_TARGET) }
+                    envelopeTargets.entries.removeIf { it.value.isEmpty() }
+                    sendAttempts.keys.removeIf { envelopeTargets[it].isNullOrEmpty() }
+                    sendTargets.entries.removeIf { it.value == CENTRAL_TARGET }
+                    if (sendingTarget == CENTRAL_TARGET) {
+                        val id = sendingEnvelope
+                        sendingEnvelope = null
+                        sendingTarget = null
+                        id?.let { envelope ->
+                            if (!envelopeTargets[envelope].isNullOrEmpty()) {
+                                store?.p2pQueue()?.firstOrNull { it.id == envelope }?.let(sendQueue::addLast)
+                            }
+                        }
+                    }
+                }
+                recentlyVisited[linkedPeer] = System.currentTimeMillis() + 2_000L
+                queuedByLink.keys.toList().forEach(::pump)
+                main.post { pump(); sendNextEnvelope() }
                 scheduleRestart()
             }
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-            Log.i(TAG, "BLE services discovered status=$status")
+            if (clientGatt !== gatt || !centralConnected) return
             val service = gatt.getService(SERVICE_UUID)
             val foundRx = service?.getCharacteristic(RX_UUID)
             val foundTx = service?.getCharacteristic(TX_UUID)
             if (status != BluetoothGatt.GATT_SUCCESS || foundRx == null || foundTx == null) {
-                // Android's GATT cache is famously stale after a reconnect: the service exists but
-                // its characteristics are missing. Refresh and retry instead of staying mute.
                 discoverAttempts++
                 Log.w(TAG, "BLE service incomplete (attempt $discoverAttempts)")
                 if (discoverAttempts <= 2) {
                     refreshGattCache(gatt)
-                    main.postDelayed({ runCatching { gatt.discoverServices() } }, 400L)
+                    main.postDelayed({ if (clientGatt === gatt) runCatching { gatt.discoverServices() } }, 400L)
                 } else {
                     discoverAttempts = 0
                     recycleClient()
@@ -473,74 +588,53 @@ object BleP2P {
                 return
             }
             discoverAttempts = 0
-            rx = foundRx
-            tx = foundTx
-            // Do not wait for onMtuChanged: some stacks return true but never call it, which
-            // leaves notifications disabled and the queue sync silently dead.
+            clientRx = foundRx
+            clientTx = foundTx
             gatt.requestMtu(512)
             enableNotifications(gatt)
         }
 
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
-            this@BleP2P.mtu = mtu.coerceAtLeast(23)
-            Log.i(TAG, "BLE client MTU ${this@BleP2P.mtu} status=$status")
+            if (clientGatt !== gatt || !centralConnected) return
+            centralMtu = mtu.coerceAtLeast(23)
             enableNotifications(gatt)
         }
 
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor?, status: Int) {
-            Log.i(TAG, "BLE descriptor write status=$status")
+            if (clientGatt !== gatt || !centralConnected || status != BluetoothGatt.GATT_SUCCESS) return
             if (descriptor?.uuid == CCCD_UUID) {
-                notifyReady = true
-                sending = false
+                centralReady = true
+                haveSentClient = false
                 sendJson(JSONObject().put("t", "hello"))
                 sendHave()
             }
         }
 
-        override fun onCharacteristicChanged(
-            gatt: BluetoothGatt,
-            characteristic: BluetoothGattCharacteristic,
-            value: ByteArray,
-        ) {
-            clientFrames.feed(value)
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
+            if (clientGatt === gatt && characteristic.uuid == TX_UUID) bleExecutor.execute { clientFrames.feed(value) }
         }
 
         @Deprecated("Deprecated in API 33")
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
-            characteristic.value?.let(clientFrames::feed)
+            if (clientGatt === gatt && characteristic.uuid == TX_UUID) characteristic.value?.let { value ->
+                bleExecutor.execute { clientFrames.feed(value) }
+            }
         }
 
         override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic?, status: Int) {
-            lastLinkActivity = System.currentTimeMillis()
-            consecutiveSendTimeouts = 0
-            if (status == BluetoothGatt.GATT_SUCCESS) {
-                consecutiveWriteErrors = 0
-                outgoing.poll()
-                sending = false
-                pump()
-                return
-            }
-            // A failed write never reached the peer, so the packet must stay queued. Two failures
-            // in a row mean the link is gone even if the stack still calls it connected; retrying
-            // the same fragment forever is what left messages stuck at the "under way" icon.
-            Log.w(TAG, "BLE write failed: $status")
-            sending = false
-            consecutiveWriteErrors++
-            if (consecutiveWriteErrors >= 2) {
-                consecutiveWriteErrors = 0
-                main.post { recycleClient() }
-            } else {
-                main.postDelayed({ pump() }, 200L)
-            }
+            if (clientGatt !== gatt || !centralConnected) return
+            completeSend(null, status == BluetoothGatt.GATT_SUCCESS)
         }
     }
 
     private fun enableNotifications(gatt: BluetoothGatt) {
-        val characteristic = tx ?: return
+        if (clientGatt !== gatt) return
+        val characteristic = clientTx ?: return
         gatt.setCharacteristicNotification(characteristic, true)
         val descriptor = characteristic.getDescriptor(CCCD_UUID)
         if (descriptor == null) {
-            notifyReady = true
+            centralReady = true
+            haveSentClient = false
             sendHave()
             return
         }
@@ -548,39 +642,40 @@ object BleP2P {
         gatt.writeDescriptor(descriptor)
     }
 
-    /**
-     * Keeps an idle link warm so a dead one is noticed: a hello makes the peer answer with HAVE.
-     * Without it a stale link can stay "connected" forever and block every reconnect.
-     */
     private fun startHeartbeat() {
         main.postDelayed(object : Runnable {
             override fun run() {
                 if (!started) return
                 val now = System.currentTimeMillis()
-                val linked = centralConnected || (serverDevice != null && notifyReady)
-                if (linked && now - lastLinkActivity > 15_000L) {
-                    sendJson(JSONObject().put("t", "hello"))
+                peers.entries.removeIf { now - it.value.seenAt >= 5_000L }
+                val clients = mutableListOf<BluetoothDevice?>()
+                if (centralConnected && centralReady && now - lastLinkActivity > 15_000L) clients.add(null)
+                notifyDevices.toList().forEach { address ->
+                    val last = linkActivity[address] ?: 0L
+                    if (now - last > 15_000L) notifyDevicesDevice(address)?.let(clients::add)
                 }
-                var advance = false
+                clients.forEach { sendJson(JSONObject().put("t", "hello"), it) }
                 synchronized(sendLock) {
                     val id = sendingEnvelope
-                    if (id != null && now - sendingSince > 20_000L) {
+                    val target = sendingTarget
+                    if (id != null && target != null && now - sendingSince > 20_000L) {
                         Log.w(TAG, "BLE envelope ACK timeout for $id")
                         sendingEnvelope = null
-                        val attempts = sendAttempts[id] ?: 0
-                        if (attempts < 3) {
-                            store?.p2pQueue()?.firstOrNull { it.id == id }?.let(sendQueue::addLast)
+                        sendingTarget = null
+                        sendTargets.remove(id)
+                        if ((sendAttempts[id] ?: 0) < 3 && target in envelopeTargets[id].orEmpty()) {
+                            store?.p2pQueue()?.firstOrNull { it.id == id }?.let(sendQueue::addFirst)
+                        } else if (envelopeTargets[id].isNullOrEmpty()) {
+                            sendAttempts.remove(id)
                         }
-                        advance = true
                     }
                 }
-                if (advance) sendNextEnvelope()
+                sendNextEnvelope()
                 main.postDelayed(this, 15_000L)
             }
         }, 15_000L)
     }
 
-    /** Android caches GATT services per device; a stale cache hides the characteristics. */
     private fun refreshGattCache(gatt: BluetoothGatt) {
         runCatching {
             val refresh = gatt.javaClass.getMethod("refresh")
@@ -590,17 +685,27 @@ object BleP2P {
     }
 
     private fun recycleClient() {
+        val gatt = clientGatt ?: return
         Log.i(TAG, "BLE link stale, reconnecting")
-        runCatching { clientGatt?.close() }
+        runCatching { gatt.close() }
         clientGatt = null
         centralConnected = false
         connecting = false
-        notifyReady = false
-        haveSent = false
-        resetIncoming()
-        outgoing.clear()
-        sending = false
-        scheduleRestart()
+        clientRx = null
+        clientTx = null
+        centralReady = false
+        haveSentClient = false
+        clientFrames.reset()
+        val queue = queuedByLink[CENTRAL_TARGET]
+        if (queue != null) synchronized(queue) {
+            queue.clear()
+            queuedByLink.remove(CENTRAL_TARGET, queue)
+        }
+        linkGenerations.computeIfAbsent(CENTRAL_TARGET) { java.util.concurrent.atomic.AtomicLong() }.incrementAndGet()
+        sending.remove(CENTRAL_TARGET)
+        inFlightByLink.remove(CENTRAL_TARGET)
+
+        recentlyVisited[linkedPeer] = System.currentTimeMillis() + 1_000L
     }
 
     private fun scheduleRestart() {
@@ -617,13 +722,87 @@ object BleP2P {
     }
 
     fun queueChanged() {
-        if (started) sendHave(force = true)
+        if (started) {
+            haveSentClient = false
+            haveSentDevices.clear()
+            sendHave(force = true)
+            pump()
+        }
     }
 
     /**
-     * Deliver envelopes already queued for one of our own mailboxes. They may have been stored
-     * earlier on a link whose decryption failed, or while the key/contact was not ready yet.
+     * The peers we have heard from recently, strongest first. Only PagerAPP advertisements are
+     * scanned (the service UUID filter), so this is the actual BLE neighbourhood, not every
+     * Bluetooth device in the room. Stale entries are filtered here as well as by the scan loop.
      */
+    fun nearbySnapshot(now: Long = System.currentTimeMillis(), maxAgeMs: Long = 10_000L): NearbySnapshot {
+        val central = centralConnected
+        val centralPeer = if (central) linkedPeer else ""
+        val connectedAddresses = connectedDevices.keys
+        val recent = peers.entries
+            .asSequence()
+            .filter { now - it.value.seenAt <= maxAgeMs }
+            .map { (id, seen) ->
+                NearbyPeer(
+                    id = id,
+                    rssi = seen.rssi,
+                    connected = id == centralPeer || seen.device.address in connectedAddresses,
+                )
+            }
+            .toMutableList()
+        val recentIds = recent.mapTo(mutableSetOf()) { it.id }
+        val recentAddresses = recent.mapNotNullTo(mutableSetOf()) { peer ->
+            peers[peer.id]?.device?.address
+        }
+        // A connected peer may stop advertising, so the 5 s scan cache drops it while the link
+        // is still up. Keep it in the count and show its last known signal (or no dBm yet).
+        if (central && centralPeer.isNotBlank() && centralPeer !in recentIds) {
+            recent += NearbyPeer(centralPeer, peers[centralPeer]?.rssi, connected = true)
+        }
+        connectedAddresses.forEach { address ->
+            if (address !in recentAddresses) {
+                val last = peers.entries.firstOrNull { it.value.device.address == address }?.value?.rssi
+                recent += NearbyPeer(address.takeLast(6), last, connected = true)
+            }
+        }
+        val found = recent.sortedByDescending { it.rssi ?: Int.MIN_VALUE }
+        return NearbySnapshot(found, connected = central || connectedAddresses.isNotEmpty())
+    }
+
+    /** Current transfer/sync state for the P2P Telemetry notification. */
+    fun activitySnapshot(now: Long = System.currentTimeMillis()): P2PActivity {
+        val nearby = nearbySnapshot(now)
+        val outbound = synchronized(sendLock) {
+            val total = outboundTotal
+            if (sendingEnvelope != null && total > 0) {
+                P2PTransferProgress(outboundDone.coerceIn(0, total), total)
+            } else {
+                null
+            }
+        }
+        val inbound = assemblers.values
+            .firstOrNull { !it.isComplete }
+            ?.let { P2PTransferProgress(it.receivedChunks.coerceIn(0, it.total), it.total) }
+        val last = if (now - lastCompletedAt in 0..3_000L && lastCompletedTotal > 0) {
+            P2PTransferProgress(lastCompletedDone.coerceIn(0, lastCompletedTotal), lastCompletedTotal)
+        } else {
+            null
+        }
+        val queued = store?.p2pQueue()?.size ?: 0
+        return P2PActivity(
+            peers = nearby.count,
+            bestRssi = nearby.bestRssi,
+            connected = nearby.connected,
+            connecting = connecting,
+            syncing = now - lastWantAt in 0..3_000L,
+            outbound = outbound,
+            inbound = inbound,
+            queued = queued,
+            lastCompleted = last,
+            lastDirection = lastCompletedDirection,
+        )
+    }
+
     private fun deliverQueuedLocally() {
         val st = store ?: return
         val ctx = context ?: return
@@ -639,11 +818,22 @@ object BleP2P {
 
     private fun sendHave(force: Boolean = false) {
         deliverQueuedLocally()
-        if (haveSent && !force) return
-        haveSent = true
-        val ids = store?.p2pQueue()?.map { it.id } ?: emptyList()
-        Log.i(TAG, "BLE HAVE ${ids.size} envelope(s)")
-        broadcast(JSONObject().put("t", "have").put("ids", JSONArray(ids)))
+        if (centralConnected && centralReady && (!haveSentClient || force)) {
+            haveSentClient = true
+            val ids = store?.p2pQueue()?.map { it.id } ?: emptyList()
+            Log.i(TAG, "BLE HAVE ${ids.size} envelope(s) central")
+            sendJson(JSONObject().put("t", "have").put("ids", JSONArray(ids)))
+        }
+        notifyDevices.toList().forEach { address ->
+            if (force || !haveSentDevices.contains(address)) {
+                notifyDevicesDevice(address)?.let { device ->
+                    haveSentDevices.add(address)
+                    val ids = store?.p2pQueue()?.map { it.id } ?: emptyList()
+                    Log.i(TAG, "BLE HAVE ${ids.size} envelope(s) peripheral")
+                    sendJson(JSONObject().put("t", "have").put("ids", JSONArray(ids)), device)
+                }
+            }
+        }
     }
 
     private fun sendHaveTo(device: BluetoothDevice?) {
@@ -654,108 +844,177 @@ object BleP2P {
 
     private fun sendJson(json: JSONObject, device: BluetoothDevice? = null) {
         val bytes = json.toString().toByteArray(Charsets.UTF_8)
-        val max = (mtu - 3).coerceAtLeast(20)
+        val payloadLimit = ((if (device == null) centralMtu else deviceMtu[device.address] ?: 23) - 3).coerceAtLeast(20)
         val frame = ByteArray(bytes.size + 2)
         frame[0] = ((bytes.size ushr 8) and 0xff).toByte()
         frame[1] = (bytes.size and 0xff).toByte()
         System.arraycopy(bytes, 0, frame, 2, bytes.size)
-        var offset = 0
-        while (offset < frame.size) {
-            val end = minOf(offset + max, frame.size)
-            outgoing.add(OutgoingPacket(frame.copyOfRange(offset, end), device))
-            offset = end
+        val link = device?.address ?: CENTRAL_TARGET
+        val queue = queuedByLink.computeIfAbsent(link) { ConcurrentLinkedQueue() }
+        synchronized(queue) {
+            var offset = 0
+            while (offset < frame.size) {
+                val end = minOf(offset + payloadLimit, frame.size)
+                queue.add(OutgoingPacket(frame.copyOfRange(offset, end), device, link))
+                offset = end
+            }
         }
-        pump()
+        pump(link)
     }
 
-    /** Sends to every live link: the one we opened and each phone connected to our server. */
-    private fun broadcast(json: JSONObject) {
-        if (clientGatt != null) sendJson(json, null)
-        notifyDevices.toList().forEach { address ->
-            notifyDevicesDevice(address)?.let { device -> sendJson(json, device) }
-        }
-    }
+    private fun notifyDevicesDevice(address: String): BluetoothDevice? = connectedDevices[address]
 
-    private fun notifyDevicesDevice(address: String): BluetoothDevice? =
-        serverDevice?.takeIf { it.address == address } ?: runCatching {
-            server?.connectedDevices?.firstOrNull { it.address == address }
-        }.getOrNull()
+    private fun linkReady(device: BluetoothDevice?): Boolean = if (device == null) {
+        centralConnected && centralReady && clientGatt != null && clientRx != null
+    } else {
+        notifyReadyDevices.contains(device.address) && notifyDevices.contains(device.address) &&
+            connectedDevices.containsKey(device.address)
+    }
 
     @SuppressLint("MissingPermission")
-    private fun pump() {
-        if (sending) return
-        // Peek before choosing a channel: polling here would silently drop packets while the
-        // peer has not enabled notifications yet.
-        val packet = outgoing.peek() ?: return
-        if (packet.device == null) {
-            val gatt = clientGatt ?: return
-            val characteristic = rx ?: return
-            characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-            characteristic.value = packet.bytes
-            if (gatt.writeCharacteristic(characteristic)) {
-                sending = true
-                armSendWatchdog()
-            } else {
-                // Another GATT operation is in flight. Never drop the packet: retry shortly.
-                main.postDelayed({ pump() }, 50L)
+    private fun pump(link: String? = null) {
+        val links = link?.let(::listOf) ?: queuedByLink.keys.toList()
+        links.forEach { targetLink ->
+            val queue = queuedByLink[targetLink] ?: return@forEach
+            val packet = synchronized(queue) {
+                if (!sending.add(targetLink)) return@forEach
+                val next = queue.peek()
+                if (next == null || !linkReady(next.device)) {
+                    sending.remove(targetLink)
+                    return@forEach
+                }
+                inFlightByLink[targetLink] = next
+                next
             }
+            val generation = linkGenerations.computeIfAbsent(targetLink) { java.util.concurrent.atomic.AtomicLong() }.get()
+            if (packet.device == null) {
+                val gatt = clientGatt ?: run { retryPacket(packet, generation); return@forEach }
+                val characteristic = clientRx ?: run { retryPacket(packet, generation); return@forEach }
+                val accepted = synchronized(queue) {
+                    if (inFlightByLink[targetLink] !== packet || linkGenerations[targetLink]?.get() != generation) {
+                        false
+                    } else {
+                        characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                        characteristic.value = packet.bytes
+                        gatt.writeCharacteristic(characteristic)
+                    }
+                }
+                if (accepted) {
+                    armSendWatchdog(packet, generation)
+                } else {
+                    retryPacket(packet, generation)
+                }
+            } else {
+                val characteristic = serverTx ?: run { retryPacket(packet, generation); return@forEach }
+                val accepted = synchronized(queue) {
+                    if (inFlightByLink[targetLink] !== packet || linkGenerations[targetLink]?.get() != generation) {
+                        false
+                    } else {
+                        characteristic.value = packet.bytes
+                        server?.notifyCharacteristicChanged(packet.device, characteristic, false) == true
+                    }
+                }
+                if (accepted) {
+                    armSendWatchdog(packet, generation)
+                } else {
+                    retryPacket(packet, generation)
+                }
+            }
+        }
+    }
+
+    private fun retryPacket(packet: OutgoingPacket, generation: Long) {
+        val queue = queuedByLink[packet.link] ?: return
+        val retry = synchronized(queue) {
+            if (queuedByLink[packet.link] !== queue ||
+                inFlightByLink[packet.link] !== packet ||
+                linkGenerations[packet.link]?.get() != generation
+            ) {
+                false
+            } else {
+                inFlightByLink.remove(packet.link)
+                sending.remove(packet.link)
+                true
+            }
+        }
+        if (retry) main.postDelayed({ pump(packet.link) }, 100L)
+    }
+
+    private fun completeSend(device: BluetoothDevice?, success: Boolean) {
+        val link = device?.address ?: CENTRAL_TARGET
+        val queue = queuedByLink[link] ?: return
+        val sent = synchronized(queue) {
+            if (queuedByLink[link] !== queue) return
+            inFlightByLink[link]?.takeIf { it.device?.address == device?.address } ?: return
+        }
+        val generation = linkGenerations[link]?.get() ?: return
+        if (!success) {
+            Log.w(TAG, "BLE frame send failed")
+            val errors = linkWriteErrors.computeIfAbsent(link) { java.util.concurrent.atomic.AtomicInteger() }.incrementAndGet()
+            if (errors >= 3) {
+                linkWriteErrors[link]?.set(0)
+                main.post { if (link == CENTRAL_TARGET) recycleClient() else scheduleRestart() }
+            }
+            retryPacket(sent, generation)
             return
         }
-        val characteristic = tx
-        if (characteristic != null && notifyDevices.contains(packet.device.address)) {
-            characteristic.value = packet.bytes
-            if (server?.notifyCharacteristicChanged(packet.device, characteristic, false) == true) {
-                sending = true
-                armSendWatchdog()
-            } else {
-                main.postDelayed({ pump() }, 50L)
+        synchronized(queue) {
+            if (queuedByLink[link] !== queue || inFlightByLink[link] !== sent || queue.peek() !== sent) return
+            queue.poll()
+            inFlightByLink.remove(link)
+            sending.remove(link)
+            if (queue.isEmpty()) {
+                queuedByLink.remove(link, queue)
             }
         }
-    }
-
-    /**
-     * A link that drops mid-frame leaves a partial length prefix in the reassembly buffer. If it
-     * is not cleared, every frame on the next connection is parsed at the wrong offset and the
-     * peer's HAVE/WANT looks empty. Drop the partial frame and any unfinished transfer.
-     */
-    private fun resetIncoming() {
-        clientFrames.reset()
-        serverReaders.values.forEach { it.reset() }
-        assemblers.clear()
-        transferEnvelopes.clear()
-        // A new link is a new chance: let previously failed envelopes be retried again.
-        synchronized(sendLock) { sendAttempts.clear() }
-    }
-
-    /** A callback that never arrives would stop all further frames; recover instead of hanging. */
-    private fun armSendWatchdog() {
-        main.postDelayed({
-            if (sending) {
-                // A missing callback does not mean a failed write: resending the bytes would
-                // duplicate them mid-frame and corrupt the peer's parser. Assume it arrived;
-                // a genuinely missing chunk is recovered with a whole-envelope NACK.
-                Log.w(TAG, "BLE send callback lost, assuming delivered")
-                outgoing.poll()
-                sending = false
-                consecutiveSendTimeouts++
-                if (consecutiveSendTimeouts >= 2) {
-                    // Two write callbacks in a row never arrived: the link is gone even if the
-                    // stack did not say so. Reset it instead of burning the whole transfer.
-                    Log.w(TAG, "BLE link is dead, reconnecting")
-                    consecutiveSendTimeouts = 0
-                    main.post { recycleClient() }
-                    return@postDelayed
+        if (sent.lastChunkFragment && sent.envelopeId != null) {
+            synchronized(sendLock) {
+                if (sendingEnvelope == sent.envelopeId && outboundTotal > 0) {
+                    outboundDone = (outboundDone + 1).coerceAtMost(outboundTotal)
                 }
-                pump()
             }
+        }
+        linkWriteErrors[link]?.set(0)
+        linkTimeouts[link]?.set(0)
+        main.post { pump(link) }
+        if (sent.device != null) {
+            val now = System.currentTimeMillis()
+            linkActivity[sent.device.address] = now
+            lastLinkActivity = now
+        }
+        pump(link)
+    }
+
+    private fun armSendWatchdog(packet: OutgoingPacket, generation: Long) {
+        main.postDelayed({
+            val queue = queuedByLink[packet.link] ?: return@postDelayed
+            val timedOut = synchronized(queue) {
+                if (queuedByLink[packet.link] !== queue ||
+                    inFlightByLink[packet.link] !== packet ||
+                    linkGenerations[packet.link]?.get() != generation
+                ) {
+                    false
+                } else {
+                    inFlightByLink.remove(packet.link)
+                    sending.remove(packet.link)
+                    true
+                }
+            }
+            if (!timedOut) return@postDelayed
+            Log.w(TAG, "BLE send callback lost")
+            val timeouts = linkTimeouts.computeIfAbsent(packet.link) { java.util.concurrent.atomic.AtomicInteger() }.incrementAndGet()
+            if (timeouts >= 2) {
+                linkTimeouts[packet.link]?.set(0)
+                main.post { if (packet.link == CENTRAL_TARGET) recycleClient() else scheduleRestart() }
+                return@postDelayed
+            }
+            main.postDelayed({ pump(packet.link) }, 100L)
         }, 5_000L)
     }
 
-    /** Reassembles length-prefixed frames for one link; each link has its own instance. */
     private class FrameReader(private val onFrame: (String) -> Unit) {
         private val buffer = ByteArrayOutputStream()
         private var expected = -1
-
         fun feed(value: ByteArray) {
             synchronized(this) {
                 buffer.write(value)
@@ -764,6 +1023,11 @@ object BleP2P {
                     if (expected < 0) {
                         if (current.size < 2) return
                         expected = ((current[0].toInt() and 0xff) shl 8) or (current[1].toInt() and 0xff)
+                        if (expected == 0 || expected > 32 * 1024) {
+                            reset()
+                            Log.w(TAG, "BLE frame length rejected: $expected")
+                            return
+                        }
                     }
                     val total = expected + 2
                     if (current.size < total) return
@@ -775,7 +1039,6 @@ object BleP2P {
                 }
             }
         }
-
         fun reset() {
             synchronized(this) {
                 buffer.reset()
@@ -785,23 +1048,30 @@ object BleP2P {
     }
 
     private fun onJson(raw: String, source: BluetoothDevice?) {
-        lastLinkActivity = System.currentTimeMillis()
+        if (Thread.currentThread().name != "pagerapp-ble-state") {
+            bleExecutor.execute { onJson(raw, source) }
+            return
+        }
+        val now = System.currentTimeMillis()
+        lastLinkActivity = now
+        if (source != null) linkActivity[source.address] = now
         val json = runCatching { JSONObject(raw) }.getOrNull() ?: return
         when (json.optString("t")) {
-            // Reply on the link the request came from, not on whichever peer connected last.
-            "hello" -> sendHaveTo(source)
+            "hello" -> {
+                if (source == null) haveSentClient = false
+                else source.address.let(haveSentDevices::remove)
+                sendHaveTo(source)
+            }
             "have" -> {
                 val remote = json.optJSONArray("ids")?.let { array ->
                     (0 until array.length()).mapNotNull { array.optString(it).takeIf(String::isNotBlank) }
                 }.orEmpty().toSet()
                 val local = store?.p2pQueue()?.map { it.id }?.toSet().orEmpty()
                 val want = remote - local
-                if (want.isNotEmpty()) {
-                    Log.i(TAG, "BLE WANT ${want.size} envelope(s)")
-                    sendJson(JSONObject().put("t", "want").put("ids", JSONArray(want.toList())), source)
-                }
+                if (want.isNotEmpty()) sendJson(JSONObject().put("t", "want").put("ids", JSONArray(want.toList())), source)
             }
             "want" -> {
+                lastWantAt = System.currentTimeMillis()
                 val wanted = json.optJSONArray("ids")?.let { array ->
                     (0 until array.length()).mapNotNull { array.optString(it).takeIf(String::isNotBlank) }
                 }.orEmpty()
@@ -815,198 +1085,307 @@ object BleP2P {
                 val id = json.optString("envelope")
                 val total = json.optInt("total")
                 val sha = json.optString("sha256")
-                if (transfer.isNotBlank() && id.isNotBlank() && total > 0 && sha.length == 64) {
-                    assemblers[transfer] = P2PAssembler(transfer, total, sha)
-                    transferEnvelopes[transfer] = id
-                    transferDevices[transfer] = source
+                if (transfer.isNotBlank() && id.isNotBlank() && total in 1..512 && sha.matches(Regex("[0-9a-fA-F]{64}"))) {
+                    val peerKey = source?.address ?: CENTRAL_TARGET
+                    val existing = transferSources.entries.count { (key, sourceKey) ->
+                        sourceKey == peerKey && key != transfer
+                    }
+                    if (existing < 4) {
+                        val assembler = runCatching { P2PAssembler(transfer, total, sha) }.getOrNull()
+                        if (assembler != null) {
+                            val old = assemblers.putIfAbsent(transfer, assembler)
+                            if (old == null) {
+                                assemblingBytes[transfer] = java.util.concurrent.atomic.AtomicInteger()
+                                transferEnvelopes[transfer] = id
+                                transferSources[transfer] = peerKey
+                                main.postDelayed({
+                                    if (assemblers.remove(transfer, assembler)) {
+                                        assemblingBytes.remove(transfer)
+                                        transferEnvelopes.remove(transfer)
+                                        transferSources.remove(transfer)
+                                    }
+                                }, 60_000L)
+                            }
+                        }
+                    }
                 }
             }
             "chunk" -> {
                 val transfer = json.optString("transfer")
+                val sourceAddress = source?.address
+                if (transferSources[transfer] != (sourceAddress ?: CENTRAL_TARGET)) return
                 val assembler = assemblers[transfer] ?: return
                 val data = runCatching { Base64.decode(json.optString("data"), Base64.NO_WRAP) }.getOrNull() ?: return
-                assembler.accept(
-                    P2PChunk(
-                        transferId = transfer,
-                        seq = json.optInt("seq"),
-                        total = json.optInt("total"),
-                        data = data,
-                        crc32 = json.optLong("crc32"),
-                    ),
-                )
+                val buffered = assemblingBytes[transfer] ?: return
+                val invalid = synchronized(assembler) {
+                    val previousSize = assembler.bufferedBytes
+                    val accepted = assembler.accept(
+                        P2PChunk(transfer, json.optInt("seq"), json.optInt("total"), data, json.optLong("crc32")),
+                    )
+                    val addedBytes = assembler.bufferedBytes - previousSize
+                    !accepted || buffered.addAndGet(addedBytes) > 128 * 1024
+                }
+                if (invalid) {
+                    assemblers.remove(transfer, assembler)
+                    assemblingBytes.remove(transfer, buffered)
+                    transferEnvelopes.remove(transfer)
+                    transferSources.remove(transfer)
+                }
             }
-            "done" -> finishTransfer(json.optString("transfer"))
+            "done" -> {
+                val transfer = json.optString("transfer")
+                if (transferSources[transfer] == (source?.address ?: CENTRAL_TARGET)) finishTransfer(transfer)
+            }
             "nack" -> {
                 val id = json.optString("envelope")
-                if (id.isNotBlank()) {
-                    Log.i(TAG, "BLE NACK for $id; queueing a retry")
-                    retryEnvelope(id)
-                }
+                val target = source?.address ?: CENTRAL_TARGET
+                if (id.isNotBlank() && target in envelopeTargets[id].orEmpty()) retryEnvelope(id, target)
             }
             "ack" -> {
                 val id = json.optString("envelope")
-                if (json.optBoolean("stored") && id.isNotBlank()) {
+                val target = source?.address ?: CENTRAL_TARGET
+                val selected = synchronized(sendLock) { sendingTarget to sendingEnvelope }
+                val selectedTarget = selected.first
+                val selectedEnvelope = selected.second
+                val queuedEnvelope = store?.p2pQueue()?.firstOrNull { it.id == id }
+                if (id.isNotBlank() && target == selectedTarget && selectedEnvelope == id &&
+                    queuedEnvelope != null && json.optBoolean("stored") &&
+                    json.optString("sha256") == queuedEnvelope.payloadSha256()
+                ) {
+                    synchronized(sendLock) {
+                        lastCompletedTotal = outboundTotal
+                        lastCompletedDone = outboundTotal
+                        lastCompletedAt = System.currentTimeMillis()
+                        lastCompletedDirection = P2PDirection.SENDING
+                        outboundTotal = 0
+                        outboundDone = 0
+                    }
                     if (json.optBoolean("delivered")) {
                         Log.i(TAG, "BLE ACK delivered envelope $id")
                         store?.markP2PDelivered(id)
                     } else {
                         Log.i(TAG, "BLE ACK custody envelope $id")
-                        // Someone is carrying it, but not the owner: keep it queued (clock icon)
-                        // and offer it to the next phone until the owner confirms.
+                        store?.markP2PCustody(id)
                     }
-                    envelopeStored(id)
+                    envelopeStored(id, target)
                 }
             }
         }
     }
 
-    private val sendTargets = HashMap<String, BluetoothDevice?>()
-
     private fun queueEnvelopes(envelopes: List<P2PEnvelope>, device: BluetoothDevice?) {
+        val target = device?.address ?: CENTRAL_TARGET
         synchronized(sendLock) {
             envelopes.forEach { envelope ->
-                sendTargets[envelope.id] = device
-                if (sendQueue.none { it.id == envelope.id } && sendingEnvelope != envelope.id) {
-                    sendQueue.addLast(envelope)
-                }
+                val targets = envelopeTargets.getOrPut(envelope.id) { java.util.concurrent.ConcurrentHashMap.newKeySet() }
+                targets.add(target)
+                sendTargets.putIfAbsent(envelope.id, target)
+                if (sendQueue.none { it.id == envelope.id } && sendingEnvelope != envelope.id) sendQueue.addLast(envelope)
             }
         }
         sendNextEnvelope()
     }
 
     private fun sendNextEnvelope() {
-        synchronized(sendLock) {
+        val selected = synchronized(sendLock) {
             if (sendingEnvelope != null) return
-            val next = sendQueue.removeFirstOrNull() ?: return
+            val available = sendQueue.indexOfFirst { envelope ->
+                envelopeTargets[envelope.id].orEmpty().any { linkReady(deviceForTarget(it)) }
+            }
+            if (available < 0) return
+            repeat(available) { sendQueue.addLast(sendQueue.removeFirst()) }
+            val next = sendQueue.removeFirst()
+            val target = envelopeTargets[next.id].orEmpty().firstOrNull { linkReady(deviceForTarget(it)) } ?: return
+            val device = deviceForTarget(target)
+            sendTargets[next.id] = target
             sendingEnvelope = next.id
+            sendingTarget = target
             sendingSince = System.currentTimeMillis()
             sendAttempts[next.id] = (sendAttempts[next.id] ?: 0) + 1
-            sendEnvelope(next, sendTargets[next.id])
+            next to device
         }
+        sendEnvelope(selected.first, selected.second)
     }
 
-    /** The peer could not assemble the envelope; send it once more (bounded). */
-    private fun retryEnvelope(id: String) {
+    private fun deviceForTarget(target: String): BluetoothDevice? =
+        if (target == CENTRAL_TARGET) null else connectedDevices[target]
+
+    private fun retryEnvelope(id: String, target: String) {
+        var queued = false
         synchronized(sendLock) {
             val attempts = sendAttempts[id] ?: 0
-            if (attempts >= 3) {
-                Log.w(TAG, "BLE giving up on $id after $attempts attempts")
-                return
-            }
-            sendQueue.removeAll { it.id == id }
-            if (sendingEnvelope == id) {
+            if (attempts >= 3 || target !in envelopeTargets[id].orEmpty()) return
+            if (sendingEnvelope == id && sendingTarget == target) {
                 sendingEnvelope = null
-                sendQueue.addFirst(store?.p2pQueue()?.firstOrNull { it.id == id } ?: return)
-                main.post { sendNextEnvelope() }
-            } else {
-                val envelope = store?.p2pQueue()?.firstOrNull { it.id == id } ?: return
-                sendQueue.addLast(envelope)
-                main.post { sendNextEnvelope() }
+                sendingTarget = null
+                sendTargets.remove(id)
+                sendQueue.removeAll { it.id == id }
+                store?.p2pQueue()?.firstOrNull { it.id == id }?.let {
+                    sendQueue.addFirst(it)
+                    queued = true
+                }
+            } else if (sendingEnvelope != id && sendQueue.none { it.id == id }) {
+                store?.p2pQueue()?.firstOrNull { it.id == id }?.let {
+                    sendQueue.addLast(it)
+                    queued = true
+                }
             }
         }
+        if (queued) main.post { sendNextEnvelope() }
     }
 
-    /** The peer confirmed custody of [id]; move on to the next queued envelope. */
-    private fun envelopeStored(id: String) {
+    private fun envelopeStored(id: String, target: String) {
         synchronized(sendLock) {
-            sendQueue.removeAll { it.id == id }
-            if (sendingEnvelope == id) {
-                sendingEnvelope = null
-                main.post { sendNextEnvelope() }
+            envelopeTargets[id]?.remove(target)
+            if (envelopeTargets[id].isNullOrEmpty()) {
+                envelopeTargets.remove(id)
+                sendAttempts.remove(id)
             }
+            if (sendingEnvelope == id && sendingTarget == target) {
+                sendingEnvelope = null
+                sendingTarget = null
+                sendTargets.remove(id)
+            }
+            if (envelopeTargets[id].isNullOrEmpty()) sendQueue.removeAll { it.id == id }
         }
+        main.post { sendNextEnvelope() }
     }
 
     private fun sendEnvelope(envelope: P2PEnvelope, device: BluetoothDevice?) {
         val bytes = envelope.toJson().toString().toByteArray(Charsets.UTF_8)
         val transfer = UUID.randomUUID().toString()
         val sha = sha256Hex(bytes)
-        // Fewer frames means fewer chances to lose one. 240 bytes fit one MTU-sized packet on a
-        // modern link; fall back to 120 when the negotiated MTU is small.
-        val chunkSize = if (mtu >= 200) 240 else 120
+        val payloadSize = ((if (device == null) centralMtu else deviceMtu[device.address] ?: 23) - 3).coerceAtLeast(20)
+        val chunkSize = (minOf(240, payloadSize * 3 / 4 - 128)).coerceAtLeast(32)
         val chunks = P2PChunker.split(transfer, bytes, chunkSize)
-        Log.i(TAG, "BLE transfer start ${envelope.id} bytes=${bytes.size} chunks=${chunks.size}")
-        sendJson(
-            JSONObject()
-                .put("t", "start")
-                .put("transfer", transfer)
-                .put("envelope", envelope.id)
-                .put("total", chunks.size)
-                .put("sha256", sha),
-            device,
-        )
-        chunks.forEach { chunk ->
-            sendJson(
-                JSONObject()
-                    .put("t", "chunk")
-                    .put("transfer", transfer)
-                    .put("seq", chunk.seq)
-                    .put("total", chunk.total)
-                    .put("crc32", chunk.crc32)
-                    .put("data", Base64.encodeToString(chunk.data, Base64.NO_WRAP)),
-                device,
-            )
+        if (chunks.isEmpty() || chunks.size > 512) {
+            Log.w(TAG, "BLE envelope is not transferable: ${envelope.id} chunks=${chunks.size}")
+            synchronized(sendLock) {
+                outboundTotal = 0
+                outboundDone = 0
+                val target = sendingTarget
+                if (sendingEnvelope == envelope.id) {
+                    sendingEnvelope = null
+                    sendingTarget = null
+                    if (target != null) envelopeTargets[envelope.id]?.remove(target)
+                    sendTargets.remove(envelope.id)
+                    if (envelopeTargets[envelope.id].isNullOrEmpty()) envelopeTargets.remove(envelope.id)
+                }
+            }
+            main.post { sendNextEnvelope() }
+            return
         }
-        sendJson(JSONObject().put("t", "done").put("transfer", transfer), device)
+        Log.i(TAG, "BLE transfer start ${envelope.id} bytes=${bytes.size} chunks=${chunks.size}")
+        synchronized(sendLock) {
+            outboundTotal = chunks.size
+            outboundDone = 0
+        }
+        val messages = buildList {
+            add(JSONObject().put("t", "start").put("transfer", transfer).put("envelope", envelope.id).put("total", chunks.size).put("sha256", sha))
+            chunks.forEach { chunk ->
+                add(JSONObject().put("t", "chunk").put("transfer", transfer).put("seq", chunk.seq).put("total", chunk.total).put("crc32", chunk.crc32).put("data", Base64.encodeToString(chunk.data, Base64.NO_WRAP)))
+            }
+            add(JSONObject().put("t", "done").put("transfer", transfer))
+        }
+        val link = device?.address ?: CENTRAL_TARGET
+        val frameLimit = ((if (device == null) centralMtu else deviceMtu[link] ?: 23) - 3).coerceAtLeast(20)
+        val queue = queuedByLink.computeIfAbsent(link) { ConcurrentLinkedQueue() }
+        synchronized(queue) {
+            messages.forEach { message ->
+                val type = message.optString("t")
+                val chunkSeq = if (type == "chunk") message.optInt("seq") else null
+                val chunkTotal = if (type == "chunk") message.optInt("total") else null
+                val envelopeId = if (type == "start" || type == "chunk" || type == "done") {
+                    envelope.id
+                } else {
+                    null
+                }
+                val payload = message.toString().toByteArray(Charsets.UTF_8)
+                val frame = ByteArray(payload.size + 2)
+                frame[0] = ((payload.size ushr 8) and 0xff).toByte()
+                frame[1] = (payload.size and 0xff).toByte()
+                System.arraycopy(payload, 0, frame, 2, payload.size)
+                var offset = 0
+                while (offset < frame.size) {
+                    val end = minOf(offset + frameLimit, frame.size)
+                    queue.add(
+                        OutgoingPacket(
+                            bytes = frame.copyOfRange(offset, end),
+                            device = device,
+                            link = link,
+                            envelopeId = envelopeId,
+                            chunkSeq = chunkSeq,
+                            chunkTotal = chunkTotal,
+                            lastChunkFragment = type == "chunk" && end == frame.size,
+                        ),
+                    )
+                    offset = end
+                }
+            }
+        }
+        pump(link)
     }
 
     private fun finishTransfer(transfer: String) {
-        val assembler = assemblers.remove(transfer) ?: return
-        val id = transferEnvelopes.remove(transfer).orEmpty()
-        val source = transferDevices.remove(transfer)
-        val bytes = assembler.finish()
+        if (Thread.currentThread().name != "pagerapp-ble-state") {
+            bleExecutor.execute { finishTransfer(transfer) }
+            return
+        }
+        val assembler = assemblers[transfer] ?: return
+        val bytes = synchronized(assembler) { assembler.finish() }
         if (bytes == null) {
-            Log.w(TAG, "BLE transfer incomplete $id; asking for a retry")
+            assemblers.remove(transfer, assembler)
+            val id = transferEnvelopes.remove(transfer).orEmpty()
+            assemblingBytes.remove(transfer)
+            val sourceKey = transferSources.remove(transfer) ?: return
+            val source = if (sourceKey == CENTRAL_TARGET) null else connectedDevices[sourceKey] ?: return
             sendAck(id, "", false, source)
             sendNack(id, source)
             return
         }
-        val envelope = runCatching { p2pEnvelopeFromJson(JSONObject(String(bytes, Charsets.UTF_8))) }
-            .getOrNull()
-        if (envelope == null || envelope.isExpired()) {
+        assemblers.remove(transfer, assembler)
+        val id = transferEnvelopes.remove(transfer).orEmpty()
+        assemblingBytes.remove(transfer)
+        val sourceKey = transferSources.remove(transfer) ?: return
+        val source = if (sourceKey == CENTRAL_TARGET) null else connectedDevices[sourceKey] ?: return
+        val envelope = runCatching { p2pEnvelopeFromJson(JSONObject(String(bytes, Charsets.UTF_8))) }.getOrNull()
+        if (envelope == null || envelope.id != id || envelope.isExpired()) {
             sendAck(id, "", false, source)
             return
         }
-        val store = store ?: return
-        store.enqueueP2P(envelope)
-        val localTarget = isLocalP2PTarget(envelope.to, store.localRouteHashes())
-        val deliveredLocally = localTarget && runCatching {
-            P2PReceiver.deliver(context ?: return, envelope)
-        }.onFailure {
-            Log.w(TAG, "BLE local delivery failed: ${it.message}")
-        }.getOrDefault(false)
-        if (deliveredLocally) store.markP2PDelivered(envelope.id)
-        Log.i(
-            TAG,
-            "BLE stored ${envelope.id}; to=${envelope.to.take(8)} localTarget=$localTarget " +
-                "localDelivery=$deliveredLocally",
-        )
+        val st = store ?: return
+        val preexisting = st.p2pQueue().firstOrNull { it.id == envelope.id }
+        if (preexisting != null && preexisting.payloadSha256() != envelope.payloadSha256()) {
+            Log.w(TAG, "BLE envelope id collision rejected: ${envelope.id}")
+            sendAck(envelope.id, envelope.payloadSha256(), false, source)
+            return
+        }
+        st.enqueueP2P(envelope)
+        val localTarget = isLocalP2PTarget(envelope.to, st.localRouteHashes())
+        val deliveredLocally = if (preexisting != null) {
+            preexisting.to == envelope.to
+        } else if (localTarget) {
+            runCatching { P2PReceiver.deliver(context ?: return, envelope) }
+                .onFailure { Log.w(TAG, "BLE local delivery failed: ${it.message}") }
+                .getOrDefault(false)
+        } else {
+            false
+        }
+        if (deliveredLocally) st.markP2PDelivered(envelope.id)
+        lastCompletedAt = System.currentTimeMillis()
+        lastCompletedDone = assembler.total
+        lastCompletedTotal = assembler.total
+        lastCompletedDirection = P2PDirection.RECEIVING
+        Log.i(TAG, "BLE stored ${envelope.id}; to=${envelope.to.take(8)} localTarget=$localTarget localDelivery=$deliveredLocally")
         sendAck(envelope.id, envelope.payloadSha256(), true, source, deliveredLocally)
     }
 
     private fun sendNack(id: String, device: BluetoothDevice?) {
-        if (id.isBlank()) return
-        sendJson(JSONObject().put("t", "nack").put("envelope", id), device)
+        if (id.isNotBlank()) sendJson(JSONObject().put("t", "nack").put("envelope", id), device)
     }
 
-    private fun sendAck(
-        id: String,
-        sha: String,
-        stored: Boolean,
-        device: BluetoothDevice?,
-        delivered: Boolean = false,
-    ) {
+    private fun sendAck(id: String, sha: String, stored: Boolean, device: BluetoothDevice?, delivered: Boolean = false) {
         if (id.isBlank()) return
-        sendJson(
-            JSONObject()
-                .put("t", "ack")
-                .put("envelope", id)
-                .put("sha256", sha)
-                .put("stored", stored)
-                // The phone that owns the destination is the delivery, by definition; no separate
-                // receipt round-trip is needed for the bubble to close.
-                .put("delivered", delivered),
-            device,
-        )
+        sendJson(JSONObject().put("t", "ack").put("envelope", id).put("sha256", sha).put("stored", stored).put("delivered", delivered), device)
     }
 }

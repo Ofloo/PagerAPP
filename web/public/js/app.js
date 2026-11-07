@@ -267,16 +267,22 @@ function personContacts() {
     .sort((a, b) => lastMessageAt(b) - lastMessageAt(a));
 }
 
+// The sender's clock travels in sent_at; created_at is the server's receipt time. Prefer the
+// former so a message sent over BLE and one sent over the gateway keep the same order everywhere.
+function messageTime(entry) {
+  return Number(entry.sent_at || entry.created_at || 0);
+}
+
 function threadHistory(contact) {
   return state.history
     .filter((entry) => (contact.sender_id && entry.from === contact.sender_id) ||
       (contact.my_sender_id && entry.from === contact.my_sender_id))
-    .sort((a, b) => Number(a.created_at || 0) - Number(b.created_at || 0));
+    .sort((a, b) => messageTime(a) - messageTime(b));
 }
 
 function lastMessageAt(contact) {
   const thread = threadHistory(contact);
-  return thread.length ? Number(thread[thread.length - 1].created_at || 0) : 0;
+  return thread.length ? messageTime(thread[thread.length - 1]) : 0;
 }
 
 function lastPreview(contact) {
@@ -492,7 +498,7 @@ function renderThread(contact) {
   const thread = threadHistory(contact);
   let lastDay = '';
   thread.forEach((entry) => {
-    const day = dayLabel(entry.created_at);
+    const day = dayLabel(messageTime(entry));
     if (day !== lastDay) {
       lastDay = day;
       const divider = document.createElement('div');
@@ -544,7 +550,7 @@ function renderThread(contact) {
     const crypto = cryptoGlyph(entry, mine);
     if (crypto) icons.append(crypto);
     icons.append(mailGlyph(entry, mine));
-    meta.append(document.createTextNode(`${timeLabel(entry.created_at)} `), icons);
+    meta.append(document.createTextNode(`${timeLabel(messageTime(entry))} `), icons);
     bubble.appendChild(meta);
     if (!entry.notice) {
       const reply = document.createElement('button');
@@ -833,6 +839,7 @@ async function sendChatMessage(text, localAttachment = null) {
   try {
     const encrypted = await encryptFor(contact, message);
     const mid = crypto.randomUUID();
+    const sentAt = Date.now() / 1000;
     const payload = {
       status: 10,
       from: contact.my_sender_id,
@@ -840,6 +847,7 @@ async function sendChatMessage(text, localAttachment = null) {
       mid,
       source: contact.my_sender_id,
       destination: contactOutbox(contact),
+      sent_at: sentAt,
     };
     if (replyingTo) {
       payload.reply_to = replyingTo.mid || replyingTo.id;
@@ -866,6 +874,7 @@ async function sendChatMessage(text, localAttachment = null) {
         source: contact.my_sender_id,
         destination: state.uuid,
         self_copy: true,
+        sent_at: sentAt,
       };
       if (replyingTo) {
         selfPayload.reply_to = replyingTo.mid || replyingTo.id;
@@ -901,7 +910,8 @@ async function sendChatMessage(text, localAttachment = null) {
       message: localAttachment
         ? (localAttachment.photo ? 'Photo' : `Attachment: ${localAttachment.name}`)
         : message,
-      created_at: Date.now() / 1000,
+      created_at: sentAt,
+      sent_at: sentAt,
       from: contact.my_sender_id,
       from_name: state.ownName,
       mid,
@@ -1029,6 +1039,7 @@ async function pollContact(contact) {
             : (attachment.photo ? 'Photo' : `Attachment: ${attachment.name}`))
           : clear,
         created_at: Number(page.created_at) || Date.now() / 1000,
+        sent_at: Number(page.sent_at) || undefined,
         from: page.from,
         from_name: page.from_name,
         mid: page.mid,
@@ -1102,6 +1113,7 @@ async function pollOwnCopies() {
               : (attachment.photo ? 'Photo' : `Attachment: ${attachment.name}`))
             : clear,
           created_at: Number(page.created_at) || Date.now() / 1000,
+          sent_at: Number(page.sent_at) || undefined,
           from: page.from,
           from_name: page.from_name,
           mid: page.mid,

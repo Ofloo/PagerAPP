@@ -59,6 +59,7 @@ import io.ofloo.pagerapp.notify.Notifications
 import io.ofloo.pagerapp.net.MailboxStatus
 import io.ofloo.pagerapp.net.PagerClient
 import io.ofloo.pagerapp.net.ServerSettings
+import io.ofloo.pagerapp.net.ServerSettingsCache
 import io.ofloo.pagerapp.net.WebclientMode
 import io.ofloo.pagerapp.push.PushManager
 import io.ofloo.pagerapp.shared.Pgp
@@ -646,7 +647,11 @@ fun SettingsScreen(
                             context.startActivity(
                                 Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
                                     .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-                                    .putExtra(Settings.EXTRA_CHANNEL_ID, Notifications.CHANNEL_SERVICE),
+                                    .putExtra(
+                                        Settings.EXTRA_CHANNEL_ID,
+                                        if (store.p2pModeEnabled) Notifications.CHANNEL_P2P
+                                        else Notifications.CHANNEL_SERVICE,
+                                    ),
                             )
                         }
                     }) { Text(tr("Hide its notification")) }
@@ -685,7 +690,7 @@ fun SettingsScreen(
                                 P2PHost.refresh(context, store)
                                 scope.launch {
                                     val settings = withContext(Dispatchers.IO) {
-                                        runCatching { PagerClient.settings(store.serverUrl) }.getOrNull()
+                                        ServerSettingsCache.get(store.serverUrl)
                                     }
                                     if (settings != null) {
                                         store.cacheP2pSettings(settings)
@@ -1032,13 +1037,11 @@ fun SettingsScreen(
                     checking = true
                     scope.launch {
                         val result = withContext(Dispatchers.IO) {
-                            runCatching { PagerClient.settings(store.serverUrl) }
+                            ServerSettingsCache.refresh(store.serverUrl)
                         }
                         checking = false
-                        found = result.getOrNull()
-                        failure = result.exceptionOrNull()?.let {
-                            "${it.javaClass.simpleName}: ${it.message}"
-                        }
+                        found = result
+                        failure = if (result == null) "Server unreachable or not a PagerMCP server" else null
                     }
                 }) { Text(if (checking) "Checking…" else "Test server") }
                 found?.let { s ->

@@ -20,6 +20,9 @@ object Notifications {
     const val CHANNEL_PAGES = "pages"
     const val CHANNEL_SERVICE = "service"
 
+    /** The mandatory foreground notification while nearby sync hosts BLE; muteable on its own. */
+    const val CHANNEL_P2P = "p2p"
+
     /** Person-to-person chats: a separate, quieter channel so the phone can treat them apart. */
     const val CHANNEL_MESSAGES = "messages"
 
@@ -48,9 +51,18 @@ object Notifications {
             context.getString(R.string.poll_channel_name),
             NotificationManager.IMPORTANCE_MIN,
         )
+        val p2p = NotificationChannel(
+            CHANNEL_P2P,
+            context.getString(R.string.p2p_channel_name),
+            NotificationManager.IMPORTANCE_MIN,
+        ).apply {
+            description = context.getString(R.string.p2p_channel_desc)
+            setShowBadge(false)
+        }
         nm.createNotificationChannel(pages)
         nm.createNotificationChannel(messages)
         nm.createNotificationChannel(service)
+        nm.createNotificationChannel(p2p)
     }
 
     /**

@@ -5,6 +5,7 @@ import io.ofloo.pagerapp.data.HistoryEntry
 import io.ofloo.pagerapp.data.Store
 import io.ofloo.pagerapp.notify.Notifications
 import io.ofloo.pagerapp.notify.Notifier
+import io.ofloo.pagerapp.shared.Contact
 import io.ofloo.pagerapp.shared.P2PEnvelope
 import io.ofloo.pagerapp.shared.PageParser
 import io.ofloo.pagerapp.shared.buildDeliveryReceipt
@@ -54,13 +55,34 @@ object P2PReceiver {
             return true
         }
 
-        val contact = store.contacts().firstOrNull { c ->
-            (page.from != null && page.from == c.senderId) ||
-                (page.from != null && page.from == c.mySenderId)
-        }
         // Decrypt with the key of the mailbox this envelope was addressed to; that is the key a
         // modern install holds per mailbox. The legacy single key is only a fallback.
         val targetMailbox = store.localMailboxIds().firstOrNull { p2pRouteHash(it) == envelope.to }
+        val contacts = store.contacts()
+        // A contact invited by us has no sender id until its first message arrives. Match that
+        // first P2P message by the channel mailbox, then learn the sender id from the envelope.
+        var contact = contacts.firstOrNull { c ->
+            (page.from != null && page.from == c.senderId) ||
+                (page.from != null && page.from == c.mySenderId)
+        } ?: contacts.firstOrNull { c ->
+            c.awaitingReply && targetMailbox != null && c.inbox == targetMailbox
+        }
+        val senderId = page.from
+        if (contact != null && contact.awaitingReply && senderId != null &&
+            senderId != contact.mySenderId
+        ) {
+            val learnedKey = page.pub?.takeIf { it.contains("BEGIN PGP PUBLIC KEY") }
+            contact = contact.copy(
+                senderId = senderId,
+                name = page.fromName ?: contact.name,
+                publicKey = learnedKey ?: contact.publicKey,
+            )
+            store.upsertContact(contact)
+            android.util.Log.i(
+                TAG,
+                "P2P deliver: learned sender ${senderId.take(8)} on ${contact.inbox.take(8)}",
+            )
+        }
         val secret = targetMailbox?.let { store.secretKeyOf(it) }
             ?.takeIf { it.isNotBlank() }
             ?: store.ownSecretKey.ifBlank { null }
@@ -84,9 +106,14 @@ object P2PReceiver {
                 .getOrDefault(false)
         }
 
-        // A duplicate transfer may arrive from another peer; never add a second bubble.
+        // A duplicate transfer may arrive from another peer; never add a second bubble. The peer
+        // still needs a receipt on this transport, otherwise a BLE-only sender keeps its clock.
         if (store.history().any { it.id == envelope.id || (page.mid != null && it.mid == page.mid && it.from == page.from) }) {
             android.util.Log.i(TAG, "P2P deliver: ${envelope.id} already in history")
+            val mid = page.mid
+            if (contact != null && !mid.isNullOrBlank()) {
+                enqueueDeliveryReceipt(context, contact, mid)
+            }
             return true
         }
 
@@ -106,7 +133,11 @@ object P2PReceiver {
             replyFromName = shown.replyFromName,
             sig = page.sig,
             signatureValid = signatureValid,
-            createdAt = if (page.createdAt > 0.0) page.createdAt else now,
+            createdAt = when {
+                page.sentAt > 0.0 -> page.sentAt
+                envelope.createdAt > 0L -> envelope.createdAt.toDouble()
+                else -> now
+            },
             ackUuid = null,
             mailbox = contact?.inbox,
             serverUrl = contact?.serverUrl,
@@ -154,23 +185,33 @@ object P2PReceiver {
         )
 
         // Tell the sender the message reached this phone, over P2P when the gateway is away.
-        val mid = page.mid
-        if (mid != null && contact != null) {
-            val maxAge = store.p2pMaxAgeSeconds.takeIf { it > 0L } ?: 604800L
-            val receipt = JSONObject(buildDeliveryReceipt(contact, mid, store.displayName))
-            store.enqueueP2P(
-                P2PEnvelope(
-                    id = java.util.UUID.randomUUID().toString(),
-                    from = store.ownRouteHash(),
-                    to = p2pRouteHash(contact.outbox),
-                    createdAt = now.toLong(),
-                    expiresAt = now.toLong() + maxAge,
-                    payload = receipt.toString(),
-                ),
-            )
-            android.os.Handler(android.os.Looper.getMainLooper()).post { BleP2P.queueChanged() }
+        page.mid?.takeIf { it.isNotBlank() }?.let { mid ->
+            if (contact != null) enqueueDeliveryReceipt(context, contact, mid)
         }
         return true
+    }
+
+    /**
+     * Queues a receipt on the P2P queue as well as the gateway path. A sender that is offline and
+     * only has BLE can never fetch a server-side receipt, so the nearby transport must carry it.
+     */
+    fun enqueueDeliveryReceipt(context: Context, contact: Contact, mid: String) {
+        val store = Store(context)
+        if (!store.p2pModeEnabled || mid.isBlank()) return
+        val now = System.currentTimeMillis() / 1000L
+        val maxAge = store.p2pMaxAgeSeconds.takeIf { it > 0L } ?: 604800L
+        val receipt = JSONObject(buildDeliveryReceipt(contact, mid, store.displayName))
+        store.enqueueP2P(
+            P2PEnvelope(
+                id = java.util.UUID.randomUUID().toString(),
+                from = store.ownRouteHash(),
+                to = p2pRouteHash(contact.outbox),
+                createdAt = now,
+                expiresAt = now + maxAge,
+                payload = receipt.toString(),
+            ),
+        )
+        android.os.Handler(android.os.Looper.getMainLooper()).post { BleP2P.queueChanged() }
     }
 }
 

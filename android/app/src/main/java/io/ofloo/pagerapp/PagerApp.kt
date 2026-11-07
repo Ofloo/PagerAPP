@@ -3,6 +3,7 @@ package io.ofloo.pagerapp
 import android.app.Application
 import io.ofloo.pagerapp.data.Store
 import io.ofloo.pagerapp.diag.CrashLog
+import io.ofloo.pagerapp.net.ServerSettingsCache
 import io.ofloo.pagerapp.ui.Translations
 
 /**
@@ -12,6 +13,7 @@ import io.ofloo.pagerapp.ui.Translations
 class PagerApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        ServerSettingsCache.init(this)
         Translations.setLanguage(Store(this).appLanguage)
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->

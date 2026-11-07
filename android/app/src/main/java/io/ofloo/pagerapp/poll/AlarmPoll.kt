@@ -73,7 +73,10 @@ class AlarmReceiver : BroadcastReceiver() {
             try {
                 runCatching { Poller.pollOnce(app) }
                 val store = Store(app)
-                if (store.alarmPolling && !store.silenceMode) AlarmPoll.arm(app, store.pollSeconds)
+                if (store.alarmPolling && !store.silenceMode) {
+                    if (store.p2pModeEnabled) io.ofloo.pagerapp.p2p.BleP2P.start(app)
+                    AlarmPoll.arm(app, store.pollSeconds.coerceAtLeast(60))
+                }
             } finally {
                 pending.finish()
             }

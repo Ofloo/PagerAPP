@@ -25,18 +25,19 @@ object PollScheduler {
     /** (Re)configures polling from the current settings. Safe to call on every app start. */
     fun apply(context: Context, store: Store) {
         if (store.alarmPolling) {
-            // Wake-yourself-up mode: no service, no background work — just an alarm that fetches.
             WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
             PollService.stop(context)
+            io.ofloo.pagerapp.p2p.P2PHost.refresh(context, store)
             AlarmPoll.arm(context, store.pollSeconds)
             return
         }
         AlarmPoll.disarm(context)
         if (store.reliableDelivery) {
             WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
-            PollService.start(context)
+            io.ofloo.pagerapp.p2p.P2PHost.refresh(context, store)
         } else {
-            PollService.stop(context)
+            io.ofloo.pagerapp.p2p.P2PHost.refresh(context, store)
+            if (!store.p2pModeEnabled) io.ofloo.pagerapp.p2p.BleP2P.stop()
             val minutes = maxOf(MIN_BACKGROUND_MINUTES, store.pollSeconds / 60L)
             val request =
                 PeriodicWorkRequestBuilder<PollWorker>(minutes, TimeUnit.MINUTES).build()

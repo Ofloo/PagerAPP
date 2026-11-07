@@ -1,8 +1,9 @@
 # PagerAPP P2P transport protocol
 
-Status: draft v0.2 — §1–§12 are the target protocol; §13 is the profile the Android client
-actually ships today (0.1.165: JSON over GATT, full route hashes, ownership-is-delivery).  
-Scope: phone app first (Android), BLE first; Wi-Fi Direct next; LoRa/T-Deck later  
+Status: draft v0.3 — §1–§12 are the target protocol; §13 is the profile the Android client
+actually ships today (0.1.181: JSON over GATT, full stable route hashes, ownership-is-delivery,
+cross-server gateway routing and a persisted per-server `/settings` cache).
+Scope: phone app first (Android), BLE first; Wi-Fi Direct next; LoRa/T-Deck later
 Encoding: target is compact CBOR; the shipped BLE transport uses UTF-8 JSON (see §13)
 
 ## 1. Design rules
@@ -267,7 +268,7 @@ max message             PagerMCP limit (64 KiB)
 - A server/transport without P2P support falls back to normal notification.
 - The wire format is versioned; additive fields are ignored by older readers.
 
-## 13. Implemented transport (Android 0.1.165)
+## 13. Implemented transport (Android 0.1.181)
 
 This is what the Android client actually puts on the air. It keeps the envelope/queue semantics
 of §3–§5 but uses JSON frames and full route hashes instead of CBOR and 8-byte prefixes.
@@ -306,13 +307,23 @@ of §3–§5 but uses JSON frames and full route hashes instead of CBOR and 8-by
 
 ```json
 {"v":1,"id":"<uuid>","from":"<sha256 hex>","to":"<sha256 hex>",
- "created_at":1790000000,"expires_at":1790604800,"payload":"<PagerMCP chat JSON>"}
+ "created_at":1790000000,"expires_at":1790604800,
+ "mailbox_encrypted":"<OpenPGP(uuid, destination server key)>",
+ "key_id":"<destination server key fingerprint>",
+ "server":"<destination server base URL>",
+ "payload":"<PagerMCP chat JSON>"}
 ```
 
 - `to` is the **full** `sha256(lowercase(mailbox_uuid))` hex string (64 chars), not a prefix.
 - A phone's BLE id is the first 8 hex chars of its own route hash.
 - `expires_at` is authoritative: expired envelopes are not stored, relayed or delivered.
-- The payload is the normal chat JSON (status/from/mid/enc/sig/…) and stays E2E encrypted.
+- The payload is the normal chat JSON (status/from/mid/enc/sig/…) and stays E2E encrypted. It
+  also carries `sent_at` (the sender's clock); receivers order by it and fall back to the
+  server's `created_at`, so a BLE copy and a gateway copy keep the same order.
+- `mailbox_encrypted` is the destination UUID encrypted to the **destination server's** public
+  key; `key_id` is that key's fingerprint. `server` names the destination server. Older
+  envelopes may omit the last two fields; a relay then falls back to its own server and the
+  PagerMCP mesh's 302 lookup.
 
 ### 13.4 Delivery: ownership is delivery
 
@@ -320,17 +331,22 @@ of §3–§5 but uses JSON frames and full route hashes instead of CBOR and 8-by
   mailbox, page addresses, contact inboxes). If so, it stores the envelope, decrypts with that
   mailbox's key (legacy key as fallback), delivers locally, and replies
   `ack {stored:true, delivered:true}`.
+- When the matching mailbox is a contact inbox and that contact is still `awaitingReply`, the
+  receiver learns the sender id and public key from this first message, so it becomes a normal
+  chat message instead of a generic page.
 - Any other phone stores custody and replies `ack {stored:true, delivered:false}`. Custody is
   **not** delivery: the sender keeps the envelope in its queue (clock icon) and offers it to every
   peer it meets until an owner confirms or the envelope expires.
-- The sender removes the envelope on `delivered:true`; that is "delivered by definition" and no
-  separate receipt round-trip is required. A plaintext delivery-receipt page is still sent to the
-  sender's mailbox as a backstop for the gateway path.
+- The sender removes the envelope on `delivered:true`. The receiver also queues a P2P
+  delivery-receipt envelope (`status:10`, `delivered:<mid>`) for the sender; that receipt clears
+  the sender's pending/clock state and is sent even when the message was already in history
+  (gateway-first duplicate). A gateway receipt remains the fallback when the peer is not nearby.
 - A peer merely advertising the id in `have` is custody, not delivery; the clock stays.
 
 ### 13.5 Transfer scheduling and retries
 
-- One envelope at a time; chunks are 240 bytes when the MTU is ≥200, otherwise 120.
+- One envelope at a time; the chunk size is derived from the negotiated MTU:
+  `min(240, (MTU-3)*3/4 - 128)`, clamped to at least 32 bytes.
 - ACK timeout 20 s; `nack` triggers an immediate resend; up to three attempts per link, after
   which the envelope is parked until a later connection (its `expires_at` still applies).
 - A failed GATT write is retried after 200 ms; two failures in a row recycle the link.
@@ -345,12 +361,38 @@ of §3–§5 but uses JSON frames and full route hashes instead of CBOR and 8-by
 
 ### 13.6 Gateway hand-off
 
-- Locally composed envelopes whose owner is not reachable are uploaded to PagerMCP when the
-  network returns (`flushP2PQueue`), so the message still reaches the recipient's mailbox.
+- BLE gets the first chance. Envelopes we composed may be uploaded at once; custody envelopes are
+  uploaded only after a 15 s grace period. Each envelope is uploaded at most once per process.
+- A successful upload does **not** remove the envelope: it stays in the P2P queue until a delivery
+  receipt or `ack {delivered:true}` arrives, so the local transport can still finish the job.
+- The relay uploads to the destination server named by the envelope (`server`), not blindly to its
+  own server. If it does not have the destination server's key, it fetches that server's
+  `/settings`, encrypts the plain destination UUID with its public key, adds the matching
+  `key_id`, and posts without a bearer. A server without the GPG path accepts the plain
+  destination as the bearer.
+- A P2P upload carries no bearer. If the server answers **302** because an unknown `key_id`
+  belongs to a peer, the client re-POSTs the same body to `Location` (still without a bearer),
+  up to `mesh.max_hops` from that server's `/settings`.
 - Envelopes already confirmed with a delivery receipt are removed instead of uploaded.
 - P2P and gateway copies of the same chat message are deduplicated by `(mid, from)`.
 
-### 13.7 Push identity (FCM)
+### 13.7 Server policy and cross-server routing
+
+- Protocol policy is server-owned. `GET /settings` supplies `p2p.*` (including the public key and
+  `key_id`/fingerprint), `mesh.*` (including `max_hops`), `sse.*`, push leases/identity,
+  `webclient.ttl_seconds`, limits and retention. Personal preferences (rules, schedules, poll
+  interval, theme, name) stay on the device.
+- The client caches the raw `/settings` response per server in SharedPreferences, loads it at
+  startup, and refreshes it every 5 minutes. Each server has its own public key and fingerprint;
+  entries are keyed by server URL.
+- Offline the client uses the cached copy and does not attempt a network fetch. If it has never
+  seen the destination server's key, it leaves the plain destination in the payload and lets the
+  relay fetch and encrypt it.
+- Push lease renewal uses the server's `warn_seconds`/`lease_seconds`; SSE read timeouts follow
+  `sse.keepalive_seconds`, and `sse.enabled` turns streaming off. No protocol value is hardcoded
+  when `/settings` provides it.
+
+### 13.8 Push identity (FCM)
 
 - `GET /settings` may advertise `subscriptions.identity` (`uuid` or `hash`),
   `identity_period_seconds`, and `server_time` (Unix seconds).
@@ -370,23 +412,27 @@ of §3–§5 but uses JSON frames and full route hashes instead of CBOR and 8-by
   lease renewal.
 - While the server reports `uuid` (default), no `route`/`routes` fields are sent.
 
-### 13.8 Deviations from §1–§12 (current client)
+### 13.9 Deviations from §1–§12 (current client)
 
-| Target | Shipped in 0.1.165 |
+| Target | Shipped in 0.1.181 |
 |---|---|
 | CBOR frames | UTF-8 JSON, 2-byte big-endian length prefix |
 | 8-byte route prefixes | full 64-char SHA-256 hex route hashes |
-| WHO_HAS / IS_AT / NOT_AT route lookup | `have`/`want` flooding; no route lookup frames yet |
-| ACK is custody only | ACK carries `delivered`, owned target = delivered |
+| WHO_HAS / IS_AT / NOT_AT route lookup | `have`/`want` flooding on BLE; P2P gateway uploads follow the server's 302 up to `mesh.max_hops` |
+| ACK is custody only | ACK carries `delivered`, owned target = delivered; a P2P receipt clears the sender's clock |
 | zlib/OpenPGP compression | not implemented (payload is already signed/encrypted) |
 | Outer envelope signature | not implemented; the payload signature is verified on delivery |
 | Wi-Fi Direct and LoRa transports | BLE GATT only |
 | Queue sync batches / Merkle summary | full id list in one `have` frame, capped by the local queue size |
+| `mailbox_encrypted` + server key | destination server's `p2p.public_key`/`key_id`; relay fetches it when the sender could not |
+| Relay upload policy | BLE first, custody after 15 s, once per process, keep until receipt/ACK |
+| Message ordering | `sent_at` from the sender, falling back to server `created_at` |
+| Server policy | full `/settings` cached per server, persisted, 5-minute refresh, offline uses cache |
 
 The target sections remain the plan for a future wire version; old readers ignore unknown JSON
 fields and unknown frame types.
 
-### 13.9 Client lifecycle (Android)
+### 13.10 Client lifecycle (Android)
 
 - **One host per transport.** With reliable delivery on, `PollService` (foreground, `dataSync`)
   hosts BLE and shows the single PagerAPP notification. Only in the quiet modes does `P2PService`
@@ -400,7 +446,7 @@ fields and unknown frame types.
   activity is expected to reuse its existing instance (`singleTop` + `onNewIntent`), not open a
   second session.
 
-### 13.10 Anonymity: what the route hash hides and what it does not
+### 13.11 Anonymity: what the route hash hides and what it does not
 
 - **A route hash is a pseudonym, not a secret.** `sha256(lowercase(uuid))` is computable by
   anyone who knows the mailbox UUID, and the UUID *is* the bearer. The hash keeps the UUID out of
@@ -423,6 +469,11 @@ fields and unknown frame types.
   leaves the device over BLE.
 
 ## 14. v2 envelope: the UUID is never readable on the wire
+
+> The shipped Android client (0.1.181) uses the stable `sha256(lowercase(uuid))` route hash for
+> `to`. The per-bucket form described below is an optional future mode and is not enabled by the
+> current client.
+
 
 Status: proposal, not implemented.
 

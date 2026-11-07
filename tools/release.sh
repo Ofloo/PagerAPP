@@ -40,25 +40,24 @@ print(f"versionCode -> {new}, versionName -> 0.1.{new}")
 PY
 fi
 
-echo "== building AAB + APK =="
+if [ ! -f "$KEY" ]; then
+    echo "Play service-account key not found at $KEY" >&2
+    exit 1
+fi
+if [ ! -f android/keystore.properties ]; then
+    echo "Android release signing configuration not found" >&2
+    exit 1
+fi
+
+if [ "$BUMP" = 0 ]; then
+    echo "Refusing to release without --bump; the Play versionCode must increase." >&2
+    exit 1
+fi
+
+echo "== building signed AAB =="
 docker/build-android.sh bundleRelease
-docker/build-android.sh assembleRelease
 
 AAB="android/app/build/outputs/bundle/release/app-release.aab"
-APK="android/app/build/outputs/apk/release/app-release.apk"
-cp "$AAB" dist/PagerAPP-store.aab
-cp "$APK" dist/PagerAPP-release.apk
-
-echo "== uploading APK to share.h4ck.io =="
-NAME="PagerAPP-release-$(date +%Y%m%d-%H%M).apk"
-APK_URL="$(curl -sS --max-time 600 --upload-file dist/PagerAPP-release.apk "https://share.h4ck.io/$NAME")"
-echo "APK: $APK_URL"
-
-if [ -f "$KEY" ]; then
-    echo "== uploading AAB to Play track '$TRACK' =="
-    python3 tools/play_upload.py --key "$KEY" --package "$PACKAGE" \
-        --aab dist/PagerAPP-store.aab --track "$TRACK" --status completed
-    echo "Play: released to '$TRACK'"
-else
-    echo "no Play key at $KEY; skipped Play upload"
-fi
+python3 tools/play_upload.py --key "$KEY" --package "$PACKAGE" \
+    --aab "$AAB" --track "$TRACK" --status completed
+echo "Play: released to '$TRACK'"
